@@ -26,10 +26,49 @@ differences *before* any comparison happens.
 
 ### The pipeline, stage by stage
 
+```mermaid
+flowchart LR
+    P["📷 photo<br/><i>any distance,<br/>angle, lighting</i>"]
+
+    subgraph PREP["shared preprocessing — pipeline.py"]
+        direction LR
+        S["1 · SEGMENT<br/>segment.py<br/><i>part vs bench</i>"]
+        I["2 · INK MASK<br/>inkmask.py<br/><i>exclude pen</i>"]
+        A["3 · ALIGN<br/>align.py<br/><i>canonical pose</i>"]
+        S --> I --> A
+    end
+
+    subgraph SCORE["scoring"]
+        direction LR
+        F["4 · FEATURES<br/>features.py<br/><i>frozen DINOv2</i>"]
+        C["5 · SUBSPACE<br/>subspace.py<br/><i>PCA residual</i>"]
+        F --> C
+    end
+
+    V["✅ verdict<br/><i>+ per-ROI scores<br/>+ heatmap</i>"]
+
+    P --> PREP --> SCORE --> V
+
+    style P fill:#e3f2fd,stroke:#1565c0,color:#0d47a1
+    style PREP fill:#fff8e1,stroke:#f9a825,color:#000
+    style SCORE fill:#f3e5f5,stroke:#7b1fa2,color:#000
+    style V fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
+    style A stroke:#d32f2f,stroke-width:3px
 ```
-photo → [1] find the part → [2] mask the pen → [3] straighten it
-      → [4] describe it → [5] score it → verdict
-```
+
+Stage 3 is outlined in red because it is load-bearing — see the warning below.
+
+And here is that same pipeline on a real defective part from `test_images/`
+(the one with the bent-up top-right tab):
+
+![Pipeline stages on a real part](docs/pipeline_stages.png)
+
+Read it left to right, top to bottom: the raw photo, the part separated from
+the bench, the blue pen traced and excluded, the part straightened onto the
+canonical canvas, the mask that actually reaches the scoring, and finally the
+anomaly heatmap. The hottest spot in panel 6 sits exactly on the bent tab,
+inside the `tab_top_right` ROI box — the part failed for the right reason, not
+by coincidence.
 
 **1. Find the part** (`segment.py`)
 Separate the bracket from the workbench, producing a black-and-white mask.
@@ -56,6 +95,15 @@ same pixels as the top-left corner of every other photo.
 > perfect part scores as badly as a defective one. That's why Experiment 1
 > exists and why you run it first.
 
+What that looks like when it works:
+
+![Alignment before and after](docs/alignment_before_after.png)
+
+Six golden photos, every one framed differently. After alignment they average
+into a *sharp* image — blur would mean they hadn't landed on each other — and
+their silhouettes agree almost everywhere (solid yellow). The thin coloured
+fringe at the edges is the residual disagreement, about 3 % of the area.
+
 **4. Describe it** (`features.py`)
 The aligned image goes through **DINOv2**, a frozen vision model, which is
 carved into a grid of patches (about 38×48 here). Each patch becomes a
@@ -78,6 +126,35 @@ This is the actual anomaly detection, and it's simpler than it sounds:
 The entire "model" for a SKU is a mean vector and a set of eigenvectors — a
 few megabytes, no weights, no training run.
 
+Visually, that's:
+
+```mermaid
+flowchart LR
+    subgraph FIT["REGISTRATION — once per SKU, ~2 min"]
+        direction LR
+        G["8–16<br/>good parts"] --> GP["preprocess"] --> GF["patch vectors<br/><i>~6,000 × 1024</i>"] --> PCA["PCA"]
+    end
+
+    M["📦 THE MODEL<br/><b>mean μ + eigenbasis C</b><br/><i>the range good<br/>parts span</i>"]
+    PCA --> M
+
+    subgraph INSP["INSPECTION — per part, ~1.2 s"]
+        direction LR
+        T["1 new<br/>part"] --> TP["preprocess<br/><i>identical path</i>"] --> TF["patch<br/>vectors"] --> R["rebuild each patch<br/>using only the model"] --> D["residual =<br/>what couldn't<br/>be rebuilt"]
+    end
+
+    M -.->|"used by"| R
+    D --> OUT{"score"}
+    OUT -->|low| OK["✅ normal<br/><i>the good parts<br/>covered this</i>"]
+    OUT -->|high| BAD["🔴 defect<br/><i>nothing in the good<br/>set looks like this</i>"]
+
+    style M fill:#fff3e0,stroke:#e65100,stroke-width:3px,color:#000
+    style FIT fill:#f1f8e9,stroke:#558b2f,color:#000
+    style INSP fill:#e1f5fe,stroke:#0277bd,color:#000
+    style BAD fill:#ffebee,stroke:#c62828,color:#b71c1c
+    style OK fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
+```
+
 **Two refinements that matter in practice.** Edges, holes, and stamped features
 always score high even on flawless parts, so each patch position is
 standardized against its own distribution across the good set. And a second
@@ -95,6 +172,34 @@ Instead, draw a box around each check on your paper inspection sheet — "tab
 must be present at top-right", "top-left corner must be chamfered" — and score
 only inside those boxes. Same model, same features, just scoped. That takes
 AUROC to **1.000**.
+
+```mermaid
+flowchart LR
+    SHEET["📋 paper<br/>inspection sheet<br/><i>1. tab at top-right<br/>2. corner chamfered</i>"]
+
+    subgraph BOXES["one ROI box per check — annotate.py"]
+        direction TB
+        R1["corner_top_left · appearance"]
+        R2["tab_top_right · appearance"]
+        R3["..._geom · geometry"]
+    end
+
+    SC["score ONLY<br/>inside each box"]
+    VER{"any box over<br/>threshold?"}
+
+    SHEET --> BOXES --> SC --> VER
+    VER -->|no| PASS["✅ PASS"]
+    VER -->|yes| FAIL["🔴 FAIL<br/><i>says which box,<br/>and by how much</i>"]
+
+    WHOLE["✗ scoring the<br/>WHOLE part instead"] -.->|"AUROC 0.667 — coin flip"| X["defect drowned out by<br/>edge + lighting noise<br/>across the rest of the part"]
+
+    style SHEET fill:#fffde7,stroke:#f57f17,color:#000
+    style BOXES fill:#e8eaf6,stroke:#3949ab,color:#000
+    style PASS fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
+    style FAIL fill:#ffebee,stroke:#c62828,color:#b71c1c
+    style X fill:#fafafa,stroke:#9e9e9e,stroke-dasharray:4 4,color:#424242
+    style WHOLE fill:#fafafa,stroke:#9e9e9e,stroke-dasharray:4 4,color:#424242
+```
 
 Two kinds of box:
 
