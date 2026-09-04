@@ -150,6 +150,32 @@ class PipelineConfig:
     # Part-level verdict threshold on the aggregated ROI z-score.
     threshold: float = 6.0
 
+    # REVIEW tier: a part may only be REJECTED on a check that appears on the
+    # inspection sheet -- rejecting on anything else would be the machine
+    # inventing a rule QC never wrote. But the subspace does see defects
+    # outside those boxes, and discarding that is wasteful. So a high score
+    # outside every ROI raises REVIEW and sends the part to a human, who
+    # remains the only authority for anything off-sheet.
+    #
+    # Expressed as a multiple of the worst score the GOLDEN parts produced
+    # outside the ROIs, so it adapts per SKU instead of being one global
+    # number that means different things on different parts.
+    review_enabled: bool = True
+    review_sigma: float = 8.0
+    # Never review below this absolute score, however quiet the golden set is.
+    #
+    # This floor is doing more work than it looks. With a small golden set the
+    # off-ROI baseline is badly optimistic: on the sample SKUs golden parts
+    # score ~1.5-2.0 off-ROI while known-GOOD test parts score 14-30, because
+    # a handful of golden images does not span the lighting. A bar derived
+    # from the golden set alone therefore reviews every part, and an alarm
+    # that always fires is worse than none -- operators stop reading it.
+    #
+    # Raise the golden set to 8-16 varied images and this floor stops being
+    # the binding constraint; until then it is what keeps the review rate
+    # sane. Tune it against real production parts, not against golden ones.
+    review_floor: float = 60.0
+
     def to_dict(self) -> dict:
         return asdict(self)
 

@@ -152,6 +152,27 @@ def register_sku(
         whole.append(sub_mod.aggregate(maps["score"], v, cfg.subspace.aggregation))
     golden_scores["whole_part"] = whole
 
+    # What a KNOWN-GOOD part scores in the region no ROI covers. This is the
+    # baseline the REVIEW tier is set against: reviewing every part that
+    # scores above zero off-ROI would bury the operator, so the bar has to be
+    # measured from the golden set rather than picked as a global constant.
+    outside = []
+    if eff_rois:
+        roi_grid_mask = np.zeros((grid_h, grid_w), bool)
+        for roi in eff_rois:
+            gy0, gy1, gx0, gx1 = patch_grid_box(roi.box, canvas, grid_h, grid_w)
+            roi_grid_mask[gy0:gy1, gx0:gx1] = True
+        for f, v in zip(fmaps, vgrids):
+            maps = sub_mod.score_maps(f, model, cfg.subspace, pos_stats)
+            off = v & ~roi_grid_mask
+            if off.any():
+                outside.append(sub_mod.aggregate(maps["score"], off,
+                                                 cfg.subspace.aggregation))
+    golden_scores["outside_rois"] = outside
+    if outside:
+        say(f"golden off-ROI scores: max {max(outside):.2f} "
+            f"(REVIEW fires above {cfg.review_sigma:g}x this)")
+
     elapsed = time.time() - t0
     say(f"registration finished in {elapsed:.1f}s")
 
