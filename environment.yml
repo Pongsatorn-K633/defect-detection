@@ -1,0 +1,39 @@
+# Conda environment for the training-free defect inspection pipeline.
+#
+#   conda env create -f environment.yml
+#   conda activate defect-detection
+#
+# PyTorch is installed via pip from the CUDA 12.4 index so the GPU build is
+# selected explicitly; the conda-forge build often resolves to a CPU-only
+# package, which makes BiRefNet and DINOv2 an order of magnitude slower.
+# For a CPU-only machine, drop the --extra-index-url line and the +cu124
+# suffixes.
+name: defect-detection
+
+channels:
+  - conda-forge
+
+dependencies:
+  - python=3.12
+  - pip
+  - numpy=1.26.*
+  - scipy
+  - scikit-learn
+  - pandas
+  - matplotlib
+  - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cu124
+      - torch==2.6.0+cu124
+      - torchvision==0.21.0+cu124
+      # Frozen segmentation backbone (BiRefNet) and its runtime dependencies.
+      # BiRefNet is loaded with trust_remote_code and imports these directly.
+      - transformers>=4.44
+      - einops
+      - kornia
+      - timm
+      - safetensors
+      - huggingface_hub
+      # Imaging, IO and the experimentation UI.
+      - opencv-python>=4.9
+      - pillow
+      - gradio>=4.44

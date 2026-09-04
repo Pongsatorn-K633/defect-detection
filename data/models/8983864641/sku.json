@@ -1,0 +1,67 @@
+{
+  "sku": "8983864641",
+  "canvas_size": [
+    1250,
+    988
+  ],
+  "ref_area_px": 30407.0,
+  "threshold": 16.0,
+  "rois": [
+    {
+      "id": "corner_top_left",
+      "type": "appearance",
+      "box": [
+        90,
+        90,
+        260,
+        220
+      ],
+      "threshold": 16.0,
+      "note": "Inspection sheet check 2: top-left corner must be chamfered (mum danbon sai tat chiang)."
+    },
+    {
+      "id": "corner_top_left_geom",
+      "type": "geometry",
+      "box": [
+        90,
+        90,
+        260,
+        220
+      ],
+      "tolerance": {
+        "area_pct": 10.0,
+        "fill_ratio_pct": 12.0,
+        "corner_angle_deg": 15.0
+      },
+      "note": "Same region measured as a silhouette shape: a square corner fills more of the box than a chamfered one."
+    },
+    {
+      "id": "tab_top_right",
+      "type": "appearance",
+      "box": [
+        930,
+        80,
+        280,
+        230
+      ],
+      "threshold": 16.0,
+      "note": "Inspection sheet check 1: the part must have the tab at top right (chinngan tong mi pik yu dankwa bon)."
+    },
+    {
+      "id": "tab_top_right_geom",
+      "type": "geometry",
+      "box": [
+        930,
+        80,
+        280,
+        230
+      ],
+      "tolerance": {
+        "area_pct": 10.0,
+        "fill_ratio_pct": 12.0,
+        "corner_angle_deg": 15.0
+      },
+      "note": "Silhouette check for the same tab: a bent-up or missing tab changes the filled area of this box."
+    }
+  ]
+}

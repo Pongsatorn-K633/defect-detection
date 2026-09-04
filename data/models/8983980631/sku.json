@@ -1,0 +1,22 @@
+{
+  "sku": "8983980631",
+  "canvas_size": [
+    1250,
+    438
+  ],
+  "ref_area_px": 43573.0,
+  "threshold": 16.0,
+  "rois": [
+    {
+      "id": "mark_rh",
+      "type": "appearance",
+      "box": [
+        410,
+        60,
+        150,
+        90
+      ],
+      "note": "Inspection sheet check: 'Check Mark RH thi chinngan' -- the embossed RH stamp must be present. This is a low-contrast raised mark only ~4 patches wide at 672px input, so it is the hardest check in the set; if recall is poor here, tile the ROI or move this check to classical CV (template match on the stamp)."
+    }
+  ]
+}

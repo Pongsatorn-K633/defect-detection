@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+Thumbs.db
+outputs/
+data/models/*/model.npz
+.gradio/

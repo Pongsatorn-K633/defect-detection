@@ -1,0 +1,24 @@
+# Ground-truth labels for the test set. 1 = defective, 0 = good, ? = unknown.
+#
+# PROVISIONAL -- these were read off the aligned corner crops by eye against
+# the inspection sheet (see outputs/corners.png), not supplied by the customer.
+# Replace them with the real QC verdicts before quoting any accuracy number.
+#
+# The two checks on IS_8983864641.JPG:
+#   1) the part must have the tab at top right
+#   2) the top-left corner must be chamfered
+#
+# image_2 and image_4 show a square (unchamfered) top-left corner AND a tab
+# bent up out of plane at top right -- both checks fail on both parts.
+# image_3 is the part running off the frame edge: an invalid photo, not a
+# defective part, so it is labelled ? and excluded from the metrics.
+image,label
+image_1.jpg,0
+image_2.jpg,1
+image_3.jpg,?
+image_4.jpg,1
+image_5.jpeg,0
+image_6.jpeg,0
+image_7.jpeg,0
+image_8.jpeg,0
+image_9.jpeg,0
