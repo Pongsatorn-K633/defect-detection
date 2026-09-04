@@ -169,7 +169,10 @@ class PipelineConfig:
         )
 
     def save(self, path: Path) -> None:
-        path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+        path.write_text(
+            json.dumps(self.to_dict(), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
 
     @classmethod
     def load(cls, path: Path) -> "PipelineConfig":

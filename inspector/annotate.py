@@ -24,6 +24,24 @@ from .roi import ROI, SKUConfig
 log = logging.getLogger(__name__)
 
 
+def _console_safe(text: str) -> str:
+    """Make text printable on whatever encoding the console happens to use.
+
+    ROI notes quote the Thai from the inspection sheets, and a Windows console
+    running cp1252 raises UnicodeEncodeError rather than printing it -- which
+    would crash `--list` over a comment field. Unrepresentable characters are
+    replaced instead; the JSON file keeps the real text either way.
+    """
+    import sys
+
+    enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        text.encode(enc)
+        return text
+    except (UnicodeEncodeError, LookupError):
+        return text.encode(enc, errors="replace").decode(enc, errors="replace")
+
+
 def annotate_interactive(sku: str) -> int:
     reg = load_registration(sku)
     ref = reg["ref_image"]
@@ -123,7 +141,10 @@ def main() -> int:
         print(f"SKU {cfg.sku}  canvas {cfg.canvas_size}  "
               f"threshold {cfg.threshold}")
         for r in cfg.rois:
-            print(f"  {r.id:<16}{r.type:<12}{r.box}  {r.tolerance or ''}")
+            print(f"  {r.id:<22}{r.type:<12}{str(r.box):<26}"
+                  f"{r.tolerance or ''}")
+            if r.note:
+                print(f"      {_console_safe(r.note)}")
         return 0
 
     return annotate_interactive(args.sku)

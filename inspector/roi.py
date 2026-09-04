@@ -81,7 +81,13 @@ class SKUConfig:
     def save(self, path: Path | None = None) -> Path:
         path = path or sku_config_path(self.sku)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+        # ensure_ascii=False keeps the Thai from the inspection sheets readable
+        # in the file; escaped to \uXXXX it is valid JSON but useless to the
+        # operator who has to check the box against the paper sheet.
+        path.write_text(
+            json.dumps(self.to_dict(), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
         return path
 
     @classmethod

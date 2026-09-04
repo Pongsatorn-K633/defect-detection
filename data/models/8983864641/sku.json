@@ -17,7 +17,7 @@
         220
       ],
       "threshold": 16.0,
-      "note": "Inspection sheet check 2: top-left corner must be chamfered (mum danbon sai tat chiang)."
+      "note": "Inspection sheet check 2: top-left corner must be chamfered. IS sheet: มุมด้านบนซ้ายตัดเฉียง"
     },
     {
       "id": "corner_top_left_geom",
@@ -45,7 +45,7 @@
         230
       ],
       "threshold": 16.0,
-      "note": "Inspection sheet check 1: the part must have the tab at top right (chinngan tong mi pik yu dankwa bon)."
+      "note": "Inspection sheet check 1: the part must have the tab at top right. IS sheet: ชิ้นงานต้องมีปีกอยู่ด้านขวาบน"
     },
     {
       "id": "tab_top_right_geom",
