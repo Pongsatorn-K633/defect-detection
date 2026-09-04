@@ -1,0 +1,21 @@
+# Ground truth for SKU 8983980631, supplied by QC.
+#
+# Check on IS_8983980631.jpg:
+#   Check Mark RH ที่ชิ้นงาน  -- the embossed RH stamp must be present.
+#
+# This is the hardest check in the set: a low-contrast RAISED stamp, roughly
+# four DINOv2 patches wide at 672 px input. It also does not change the part
+# silhouette at all, so no geometry/shape measure can see it -- appearance
+# scoring is the only route.
+#
+# Labels were supplied AFTER the SKU was registered and the ROI positioned,
+# and registration never reads this file (register_sku takes no labels
+# argument; only experiments/ read labels, and only to score results).
+#
+image,label,condition
+image_1.jpg,1,ng
+image_2.jpg,1,ng
+image_3.jpg,1,ng
+image_4.jpg,1,ng
+image_5.jpeg,0,ok
+image_6.jpeg,0,ok

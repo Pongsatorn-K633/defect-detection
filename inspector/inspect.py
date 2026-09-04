@@ -203,6 +203,9 @@ def main() -> int:
         sku_cfg = SKUConfig(sku=args.sku, canvas_size=reg["canvas_size"])
     if args.threshold is not None:
         sku_cfg.threshold = args.threshold
+    # Apply the same per-SKU overrides registration used, or the model is
+    # scored on a different patch grid than it was fitted on.
+    reg["config"] = sku_cfg.apply_to(reg["config"])
 
     if args.image:
         paths = [Path(args.image)]

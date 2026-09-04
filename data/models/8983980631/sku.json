@@ -5,18 +5,20 @@
     438
   ],
   "ref_area_px": 43573.0,
-  "threshold": 16.0,
+  "threshold": 20.0,
   "rois": [
     {
       "id": "mark_rh",
       "type": "appearance",
       "box": [
-        410,
-        60,
+        400,
+        68,
         150,
-        90
+        80
       ],
-      "note": "Inspection sheet check: the embossed RH stamp must be present. IS sheet: Check Mark RH ที่ชิ้นงาน. This is a low-contrast raised mark only ~4 patches wide at 672px input, so it is the hardest check in the set; if recall is poor here, tile the ROI or move this check to classical CV (template match on the stamp)."
+      "threshold": 20.0,
+      "note": "Inspection sheet check: the embossed RH stamp must be present. IS sheet: Check Mark RH ที่ชิ้นงาน. Needs input_size 1120, not the 672 default: at 672 this box holds only ~16 patches and the verdict rides on the single worst one, which a good part can trip. At 1120 it holds ~27-50 and golden parts sit at 1.49 while a missing/holed mark scores 69-90."
     }
-  ]
+  ],
+  "input_size": 1120
 }

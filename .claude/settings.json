@@ -39,7 +39,12 @@
       "Bash(npx --yes @mermaid-js/mermaid-cli -i .mmdcheck/m3.mmd -o .mmdcheck/m3.png)",
       "Bash(echo \"exit=$?\")",
       "Bash(PYTHONIOENCODING=utf-8 python -m inspector.annotate --sku 8983980631 --list)",
-      "Bash(PYTHONIOENCODING=utf-8 timeout 1800 python -m inspector.inspect --sku 8983864641 --csv outputs/final_results.csv)"
+      "Bash(PYTHONIOENCODING=utf-8 timeout 1800 python -m inspector.inspect --sku 8983864641 --csv outputs/final_results.csv)",
+      "Bash(PYTHONIOENCODING=utf-8 timeout 1800 python -m inspector.inspect --sku 8983980631 --csv outputs/markrh_blind.csv)",
+      "Bash(PYTHONIOENCODING=utf-8 python -m inspector.annotate --sku 8983864641 --list)",
+      "Bash(PYTHONIOENCODING=utf-8 timeout 1800 python -m inspector.register --sku 8983980631 --segmenter birefnet)",
+      "Bash(PYTHONIOENCODING=utf-8 timeout 1800 python -m inspector.inspect --sku 8983980631)",
+      "Bash(PYTHONIOENCODING=utf-8 timeout 1800 python -m inspector.inspect --sku 8983864641)"
     ]
   }
 }

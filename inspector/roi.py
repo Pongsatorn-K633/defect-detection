@@ -58,15 +58,24 @@ class SKUConfig:
     ref_area_px: float = 0.0
     rois: list[ROI] = field(default_factory=list)
     threshold: float = 6.0
+    # Per-SKU DINOv2 input resolution, overriding the global default. Some
+    # checks are simply under-resolved at 672: if an ROI holds only ~16
+    # patches, the verdict rides on the single worst one and a good part can
+    # trip it. Raising the resolution for that SKU buys real patches instead
+    # of a luckier draw. None means "use the pipeline default".
+    input_size: int | None = None
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "sku": self.sku,
             "canvas_size": list(self.canvas_size),
             "ref_area_px": self.ref_area_px,
             "threshold": self.threshold,
             "rois": [r.to_dict() for r in self.rois],
         }
+        if self.input_size is not None:
+            d["input_size"] = self.input_size
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "SKUConfig":
@@ -76,7 +85,23 @@ class SKUConfig:
             ref_area_px=d.get("ref_area_px", 0.0),
             rois=[ROI.from_dict(r) for r in d.get("rois", [])],
             threshold=d.get("threshold", 6.0),
+            input_size=d.get("input_size"),
         )
+
+    def apply_to(self, cfg):
+        """Return `cfg` with this SKU's overrides applied.
+
+        Registration and inspection must both call this, or the model is
+        fitted at one resolution and tested at another -- which silently
+        changes the patch grid and invalidates the position statistics.
+        """
+        if self.input_size is None:
+            return cfg
+        import copy
+
+        cfg = copy.deepcopy(cfg)
+        cfg.features.input_size = int(self.input_size)
+        return cfg
 
     def save(self, path: Path | None = None) -> Path:
         path = path or sku_config_path(self.sku)

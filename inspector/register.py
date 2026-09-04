@@ -293,6 +293,15 @@ def main() -> int:
     except FileNotFoundError:
         sku_cfg, rois = None, []
 
+    if sku_cfg is not None:
+        # Per-SKU overrides (e.g. a higher input resolution for an
+        # under-resolved check) must apply here as well as at inspection --
+        # fitting at one resolution and testing at another changes the patch
+        # grid and silently invalidates the position statistics.
+        cfg = sku_cfg.apply_to(cfg)
+        if sku_cfg.input_size:
+            print(f"SKU override: input_size={sku_cfg.input_size}")
+
     images = [load_image(p) for p in paths]
     reg = register_sku(args.sku, images, cfg, [p.name for p in paths], rois)
     out = save_registration(reg, sku_cfg)
