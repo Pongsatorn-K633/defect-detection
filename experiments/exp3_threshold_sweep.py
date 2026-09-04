@@ -86,16 +86,30 @@ def main() -> int:
 
     per_roi: dict[str, list[float]] = {}
     part_scores, y, names = [], [], []
+    skipped = []
     for p in tpaths:
         if p.name not in labels:
             continue
         res = inspect_image(load_image_cached(p), reg, sku_cfg, cfg,
                             source=p.name)
+        if res.verdict == "RETAKE":
+            # An unusable photo produces no ROI scores at all. Keeping its
+            # label would leave the label array longer than every score array
+            # and silently misalign the sweep, so it is dropped from both --
+            # a retake is a photography outcome, not a threshold question.
+            skipped.append((p.name, res.reason))
+            continue
         names.append(p.name)
         y.append(labels[p.name])
         part_scores.append(res.max_score)
         for r in res.rois:
             per_roi.setdefault(r.id, []).append(r.score)
+
+    if skipped:
+        print(f"excluded {len(skipped)} invalid photo(s) from the sweep:")
+        for n, why in skipped:
+            print(f"  {n}: {why}")
+        print()
 
     y = np.array(y, int)
     if (y == 1).sum() == 0 or (y == 0).sum() == 0:

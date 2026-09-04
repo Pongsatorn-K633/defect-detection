@@ -36,6 +36,10 @@ class PreprocessResult:
     transform: np.ndarray | None = None
     ok: bool = True
     reject_reason: str = ""
+    # Operator-facing wording in Thai. The station is staffed by Thai-speaking
+    # operators, and a retake instruction is only useful if the person holding
+    # the camera can act on it.
+    reject_reason_th: str = ""
     info: dict = field(default_factory=dict)
 
     @property
@@ -91,6 +95,7 @@ def preprocess(
     if part.max() == 0:
         res.ok = False
         res.reject_reason = "no part found in frame"
+        res.reject_reason_th = "ไม่พบชิ้นงานในภาพ"
         return res
 
     res.info.update(segment.mask_stats(part))
@@ -99,6 +104,7 @@ def preprocess(
         # calling it a defect would be the wrong message to the operator.
         res.ok = False
         res.reject_reason = "part is cut off by the frame edge - retake the photo"
+        res.reject_reason_th = "จัดชิ้นส่วนให้อยู่ในพื้นที่"
 
     ink = inkmask.blue_ink_mask(image, cfg.ink)
     res.ink_mask = ink

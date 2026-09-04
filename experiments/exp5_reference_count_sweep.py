@@ -52,7 +52,7 @@ def evaluate(sku, gpaths, gimgs, tpaths, timgs, cfg, sku_cfg, labels, seed=0):
     }
 
     s = np.array(scores, float)
-    valid = np.array([v != "INVALID" for v in verdicts])
+    valid = np.array([v != "RETAKE" for v in verdicts])
     row["test_mean"] = float(np.nanmean(s[valid])) if valid.any() else np.nan
 
     if labels:

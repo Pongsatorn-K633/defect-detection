@@ -32,7 +32,14 @@
       "Bash(python -m inspector.annotate --sku 8983864641 --list)",
       "Bash(python -m inspector.annotate --sku 8983980631 --list)",
       "Bash(python -m experiments.exp4_specular_sensitivity --sku 8983864641)",
-      "Bash(timeout 900 python -m experiments.exp1_alignment_repeatability --sku 8983864641 --segmenter classical)"
+      "Bash(timeout 900 python -m experiments.exp1_alignment_repeatability --sku 8983864641 --segmenter classical)",
+      "Bash(git commit -q -m ' *)",
+      "Bash(git add *)",
+      "Bash(grep -n \"^#\\\\|^###\\\\|^\\\\`\\\\`\\\\`\" README.md)",
+      "Bash(npx --yes @mermaid-js/mermaid-cli -i .mmdcheck/m3.mmd -o .mmdcheck/m3.png)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(PYTHONIOENCODING=utf-8 python -m inspector.annotate --sku 8983980631 --list)",
+      "Bash(PYTHONIOENCODING=utf-8 timeout 1800 python -m inspector.inspect --sku 8983864641 --csv outputs/final_results.csv)"
     ]
   }
 }

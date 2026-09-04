@@ -252,15 +252,18 @@ def do_inspect(test_file, roi_mode, roi_text, threshold, state):
     res = inspect_image(img, reg, sku_cfg, cfg, source=Path(path).name)
     infer_s = time.time() - t0
 
-    if res.verdict == "INVALID":
+    if res.verdict == "RETAKE":
         stages = viz.grid([(res.pre.image, "raw"),
                            (viz.overlay_mask(res.pre.image, res.pre.part_mask)
                             if res.pre.part_mask is not None else res.pre.image,
                             "part mask")], cols=2)
         return (None, _to_rgb(stages),
-                f"### INVALID\n\n{res.reason}\n\n"
+                f"### RETAKE — ถ่ายภาพใหม่\n\n"
+                f"## {res.reason_th}\n\n"
+                f"*{res.reason}*\n\n"
                 f"This is a photography problem, not a defective part -- "
-                f"retake the picture rather than scrapping the part.",
+                f"retake the picture rather than scrapping the part. "
+                f"The part has NOT been inspected.",
                 f"Inference time  {infer_s * 1000:.0f} ms")
 
     thr = float(threshold)

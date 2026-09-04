@@ -1,24 +1,29 @@
-# Ground-truth labels for the test set. 1 = defective, 0 = good, ? = unknown.
+# Ground truth for the test set, supplied by QC.
 #
-# PROVISIONAL -- these were read off the aligned corner crops by eye against
-# the inspection sheet (see outputs/corners.png), not supplied by the customer.
-# Replace them with the real QC verdicts before quoting any accuracy number.
+#   label      1 = NG, fails a check on the inspection sheet. This is what
+#                  every accuracy number is measured against.
+#   condition  ok / ng / retake  -- retake means the photo is unusable (part
+#                  not fully in frame). It says nothing about the part itself.
 #
-# The two checks on IS_8983864641.JPG:
-#   1) the part must have the tab at top right
-#   2) the top-left corner must be chamfered
+# Checks on IS_8983864641.JPG:
+#   1) ชิ้นงานต้องมีปีกอยู่ด้านขวาบน  -- the part must have the tab at top right
+#   2) มุมด้านบนซ้ายตัดเฉียง          -- the top-left corner must be chamfered
 #
-# image_2 and image_4 show a square (unchamfered) top-left corner AND a tab
-# bent up out of plane at top right -- both checks fail on both parts.
-# image_3 is the part running off the frame edge: an invalid photo, not a
-# defective part, so it is labelled ? and excluded from the metrics.
-image,label
-image_1.jpg,0
-image_2.jpg,1
-image_3.jpg,?
-image_4.jpg,1
-image_5.jpeg,0
-image_6.jpeg,0
-image_7.jpeg,0
-image_8.jpeg,0
-image_9.jpeg,0
+# image_1  NG -- the top-right tab is missing entirely (check 1).
+# image_2  NG -- the top-left corner is square, not chamfered (check 2).
+# image_4  NG -- raised/bent flap at the top right. QC judgement: this falls in
+#                the same top-right region the sheet points at, so check 1
+#                covers it and it is a legitimate reject, not merely advisory.
+# image_3  OK -- good part, but not fully in frame. The photo is unusable; the
+#                operator re-shoots it. Excluded from accuracy metrics.
+#
+image,label,condition
+image_1.jpg,1,ng
+image_2.jpg,1,ng
+image_3.jpg,0,retake
+image_4.jpg,1,ng
+image_5.jpeg,0,ok
+image_6.jpeg,0,ok
+image_7.jpeg,0,ok
+image_8.jpeg,0,ok
+image_9.jpeg,0,ok

@@ -41,13 +41,17 @@ class ROIResult:
 @dataclass
 class InspectionResult:
     source: str = ""
-    verdict: str = "PASS"          # PASS | FAIL | INVALID
+    # RETAKE is deliberately distinct from FAIL: the photo is unusable, but
+    # nothing has been learned about the part. Reporting it as FAIL would send
+    # the operator to scrap a part that was never inspected.
+    verdict: str = "PASS"          # PASS | FAIL | RETAKE
     rois: list[ROIResult] = field(default_factory=list)
     score_map: np.ndarray | None = None
     valid_grid: np.ndarray | None = None
     pre: PreprocessResult | None = None
     inference_seconds: float = 0.0
     reason: str = ""
+    reason_th: str = ""            # operator-facing wording in Thai
 
     @property
     def max_score(self) -> float:
@@ -75,11 +79,12 @@ def inspect_image(
                      source=source)
     out.pre = pre
     if not pre.ok:
-        # An invalid photo is not a defective part. Reporting a clipped or
+        # An unusable photo is not a defective part. Reporting a clipped or
         # unsegmentable frame as FAIL would send the operator to scrap a good
-        # part instead of retaking the picture.
-        out.verdict = "INVALID"
+        # part instead of retaking the picture, so it gets its own verdict.
+        out.verdict = "RETAKE"
         out.reason = pre.reject_reason
+        out.reason_th = pre.reject_reason_th
         out.inference_seconds = time.time() - t0
         return out
 
@@ -221,6 +226,8 @@ def main() -> int:
         failed = ", ".join(f"{r.id}={r.score:.2f}" for r in res.failed_rois())
         print(f"{p.name:<18}{res.verdict:<10}{res.max_score:>8.2f}  "
               f"{res.reason or failed}")
+        if res.reason_th:
+            print(f"{'':<18}{'':<10}{'':>8}  -> {viz.console_safe(res.reason_th)}")
         row = {"image": p.name, "verdict": res.verdict,
                "max_score": res.max_score,
                "inference_s": round(res.inference_seconds, 3),

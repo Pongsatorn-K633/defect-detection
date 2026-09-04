@@ -1,8 +1,26 @@
 """Visualisation helpers: overlays, heatmaps and stage contact sheets."""
 from __future__ import annotations
 
+import sys
+
 import cv2
 import numpy as np
+
+
+def console_safe(text: str) -> str:
+    """Make text printable on whatever encoding the console happens to use.
+
+    Operator messages are written in Thai, and a Windows console running cp1252
+    raises UnicodeEncodeError rather than printing them -- which would crash a
+    CLI over a status line. Unrepresentable characters degrade to '?'; the
+    stored text is untouched.
+    """
+    enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        text.encode(enc)
+        return text
+    except (UnicodeEncodeError, LookupError):
+        return text.encode(enc, errors="replace").decode(enc, errors="replace")
 
 
 def overlay_mask(image, mask, color=(0, 255, 0), alpha=0.45):

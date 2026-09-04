@@ -104,9 +104,9 @@ def main() -> int:
                 {"image": 20, "verdict": 10, "max_score": 12,
                  "clipped_pct": 13, "failed": 24})
 
-    scored = [r for r in rows if r["verdict"] != "INVALID"]
+    scored = [r for r in rows if r["verdict"] != "RETAKE"]
     false_fail = [r for r in scored if r["verdict"] == "FAIL"]
-    invalid = [r for r in rows if r["verdict"] == "INVALID"]
+    invalid = [r for r in rows if r["verdict"] == "RETAKE"]
 
     print(f"\n{len(false_fail)} / {len(scored)} good parts falsely failed "
           f"({100 * len(false_fail) / max(len(scored), 1):.1f}%)")
