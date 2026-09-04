@@ -435,6 +435,16 @@ outputs/               everything the scripts write
 
 ## Notes and caveats
 
+**This codebase assumes one part per photo, photographed close up.** The real
+station photographs a 600 × 1400 mm area with many parts of the same SKU laid
+out at once, which this pipeline does not yet handle — segmentation keeps only
+the largest component, so the other parts would be silently discarded. That
+gap, and the camera resolution needed to keep the small-mark checks working at
+station distance, are written up in
+[docs/PRODUCTION_NOTES.md](docs/PRODUCTION_NOTES.md). **Read that before
+specifying station hardware** — 4K is the minimum that preserves the accuracy
+shown here, and it is not a software-fixable choice.
+
 **The labels are provisional.** `data/labels/8983864641.csv` was read off the
 aligned corner crops by eye against the inspection sheet, not supplied by QC.
 Every accuracy number above rests on it. Replace it with real verdicts before
