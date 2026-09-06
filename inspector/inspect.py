@@ -41,13 +41,13 @@ class ROIResult:
 @dataclass
 class InspectionResult:
     source: str = ""
-    # Four outcomes, and the distinctions matter operationally:
+    # Three outcomes. The scope is the inspection sheet and nothing else --
+    # general defects are caught by a separate station upstream.
     #   PASS    every sheet check is within limits
     #   FAIL    a sheet check failed -- the only ground for rejection
-    #   REVIEW  sheet checks pass, but something outside them scores high.
-    #           A person decides; the machine does not reject off-sheet.
-    #   RETAKE  the photo is unusable, so nothing was learned about the part
-    verdict: str = "PASS"          # PASS | FAIL | REVIEW | RETAKE
+    #   RETAKE  the photo is unusable, so nothing was learned about the part.
+    #           Distinct from FAIL: never scrap a part that was not inspected.
+    verdict: str = "PASS"          # PASS | FAIL | RETAKE
     rois: list[ROIResult] = field(default_factory=list)
     score_map: np.ndarray | None = None
     valid_grid: np.ndarray | None = None
@@ -55,12 +55,6 @@ class InspectionResult:
     inference_seconds: float = 0.0
     reason: str = ""
     reason_th: str = ""            # operator-facing wording in Thai
-    # Set when something outside every sheet ROI scores high: the score, and
-    # where it is on the canonical canvas so the operator can be shown where
-    # to look.
-    review_score: float = 0.0
-    review_threshold: float = 0.0
-    review_xy: tuple[int, int] | None = None
 
     @property
     def max_score(self) -> float:
@@ -155,65 +149,8 @@ def inspect_image(
 
     out.verdict = "FAIL" if any(not r.passed for r in out.rois) else "PASS"
 
-    # Off-sheet anomalies: surface them to a person rather than rejecting on
-    # them. A FAIL already sends the part back, so only a passing part is
-    # worth reviewing.
-    if out.verdict == "PASS" and cfg.review_enabled:
-        review = _off_roi_review(maps["score"], valid, sku_cfg, reg, cfg,
-                                 grid_h, grid_w)
-        if review:
-            out.verdict = "REVIEW"
-            out.reason = (f"something outside the inspection-sheet checks "
-                          f"scores {review['score']:.1f} "
-                          f"(review bar {review['threshold']:.1f}) -- "
-                          f"not grounds for rejection, please look at the part")
-            out.reason_th = "แนะนำให้ตรวจสอบอีกครั้ง"
-            out.review_score = review["score"]
-            out.review_threshold = review["threshold"]
-            out.review_xy = review["xy"]
-
     out.inference_seconds = time.time() - t0
     return out
-
-
-def _off_roi_review(score_map, valid, sku_cfg, reg, cfg, grid_h, grid_w):
-    """Is anything outside every sheet ROI anomalous enough to show a human?
-
-    The bar is a multiple of the worst score the GOLDEN parts produced in the
-    same off-ROI region, so it adapts to how busy a given part is rather than
-    being one global number that means different things on different SKUs.
-    Returns None when there is nothing worth reviewing.
-    """
-    rois = sku_cfg.effective_rois() if sku_cfg else []
-    if not rois:
-        return None
-
-    covered = np.zeros((grid_h, grid_w), bool)
-    for roi in rois:
-        gy0, gy1, gx0, gx1 = patch_grid_box(roi.box, reg["canvas_size"],
-                                            grid_h, grid_w)
-        covered[gy0:gy1, gx0:gx1] = True
-    off = valid & ~covered
-    if not off.any():
-        return None
-
-    golden_off = reg.get("golden_scores", {}).get("outside_rois") or []
-    if not golden_off:
-        # No baseline recorded (an older model): staying silent is better than
-        # reviewing on a number we cannot justify.
-        return None
-
-    threshold = max(cfg.review_sigma * float(max(golden_off)), cfg.review_floor)
-    score = sub_mod.aggregate(score_map, off, cfg.subspace.aggregation)
-    if not np.isfinite(score) or score <= threshold:
-        return None
-
-    masked = np.where(off, score_map, -np.inf)
-    iy, ix = np.unravel_index(np.argmax(masked), masked.shape)
-    cw, ch = reg["canvas_size"]
-    return {"score": float(score), "threshold": float(threshold),
-            "xy": (int((ix + 0.5) / grid_w * cw),
-                   int((iy + 0.5) / grid_h * ch))}
 
 
 def render_result(res: InspectionResult, reg: dict, sku_cfg: SKUConfig,
@@ -246,15 +183,6 @@ def render_result(res: InspectionResult, reg: dict, sku_cfg: SKUConfig,
         heat = viz.draw_rois(heat, [r.to_dict() for r in
                                     (sku_cfg.effective_rois() if sku_cfg else [])],
                              scores, thr)
-        if res.review_xy is not None:
-            # Circle what triggered the review. Without this the operator is
-            # told to look again but not where, which is barely better than
-            # not telling them.
-            cv2.circle(heat, res.review_xy, 34, (0, 220, 255), 3)
-            heat = viz.label(heat, f"review {res.review_score:.1f}",
-                             (max(res.review_xy[0] - 40, 4),
-                              max(res.review_xy[1] - 42, 16)),
-                             (0, 220, 255), 0.55)
         tiles.append((heat, f"{res.verdict}  max {res.max_score:.2f}"))
 
     cv2.imwrite(str(out_dir / f"{stem}_stages.png"), viz.grid(tiles, cols=5))

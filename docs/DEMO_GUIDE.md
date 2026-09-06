@@ -52,7 +52,7 @@ returns in about a second, because it does not re-fit.
 
 ---
 
-## The four tabs
+## The five tabs
 
 ### 1. Reference images
 
@@ -127,7 +127,7 @@ the file box.
 
 ### 4. Output
 
-- **Verdict** — PASS / FAIL / REVIEW / RETAKE, plus a per-ROI score table
+- **Verdict** — PASS / FAIL / RETAKE, plus a per-ROI score table
 - **timings and alignment** — inference time, alignment IoU, centroid drift,
   ECC status, ink coverage
 - **heatmap** — anomaly score on the aligned part, with ROI boxes drawn.
@@ -137,6 +137,48 @@ the file box.
 **Always look at the heatmap, not just the verdict.** If a part FAILs but the
 hot spot is not on the defect, the verdict is right by luck. That is exactly
 how the Mark RH resolution problem was found.
+
+### 5. Metrics
+
+Answers "is this good enough to put on a line?" with numbers rather than
+impressions. Needs ground truth in `data/labels/<sku>.csv` — one line per
+image, `image,label`, where 1 = NG and 0 = OK. Both sample SKUs already have
+one.
+
+Pick a SKU, press **Evaluate**. It scores every labelled test image once, then
+**the threshold slider updates everything instantly** — no re-scoring. That is
+what makes the trade-off explorable rather than a two-minute wait per setting.
+
+The three numbers that decide usability:
+
+| Metric | Engineering name | Formula | In words | Want |
+|---|---|---|---|---|
+| Capture rate | Recall / sensitivity / TPR | TP / (TP + FN) | of the bad parts, how many we caught | **HIGHER** |
+| False alarm rate | FPR / 1 − specificity | FP / (FP + TN) | of the good parts, how many we wrongly stopped | **LOWER** |
+| Review load | Flag rate / positive rate | (TP + FP) / total | of everything, how much lands in the queue | LOWER |
+
+**Capture rate up, false alarm rate down — and they pull against each other.**
+Lowering the threshold catches more defects and also stops more good parts, so
+every setting is a compromise. The sweep chart shows exactly where yours sits.
+
+Four charts:
+
+- **confusion matrix** — TP/FP/FN/TN at the current threshold. Colour marks
+  right versus wrong, not magnitude: a large TN and a large FP are both big
+  numbers but only one is good.
+- **sweep** — capture and false alarm rates across every threshold, with your
+  current one marked and a suggested one that catches every NG.
+- **score distribution** — every part's score by true label. **The most useful
+  chart here.** Its title names the closest OK and closest NG and the gap
+  between them; a healthy AUROC can sit on top of a margin of almost nothing,
+  and this is where you see that.
+- **ROC** — the standard threshold-independent summary, with AUROC.
+
+RETAKE images are excluded and listed by name. An unusable photo says nothing
+about the part, so counting it either way would invent an outcome.
+
+The panel also names any **missed defect** outright, because a missed NG
+normally costs far more than a false alarm.
 
 ---
 
@@ -193,7 +235,6 @@ Pen strokes become the strongest anomaly on the part.
 | Good parts flagged | Usually too few or too uniform reference images. Add varied ones. |
 | One patch spikes, scores unstable | The ROI holds too few patches. Raise **input resolution**. |
 | RETAKE on a good part | The part touches the frame edge. Re-shoot with the whole part visible. |
-| REVIEW on everything | The review bar is calibrated from the golden set, which is currently too small. See `review_floor` in `inspector/config.py`. |
 | Page won't load | Check the terminal for the actual URL — if 7860 was busy Gradio uses 7861. |
 | Slow, or `cuda False` | CPU-only PyTorch. See Setup in the README. On a laptop, plug in — GPUs clock down on battery. |
 | First run stalls at 0% | Downloading BiRefNet (~900 MB) or DINOv2 (~1.1 GB). One time only. |

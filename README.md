@@ -224,27 +224,22 @@ Both run **the identical preprocessing code path** — one function,
 `pipeline.preprocess()`, called by both. If they ever diverged, the model would
 be comparing against something subtly different from what it learned.
 
-### Four possible verdicts
+### Three possible verdicts
 
-| Verdict | Shown to operator | What it means | Who decides |
-|---|---|---|---|
-| **PASS** | ผ่าน | every sheet check is within limits | machine |
-| **FAIL** | ไม่ผ่าน | a sheet check failed — the report names which and by how much | machine |
-| **REVIEW** | แนะนำให้ตรวจสอบอีกครั้ง | sheet checks pass, but something *outside* them scores high | **a human** |
-| **RETAKE** | จัดชิ้นส่วนให้อยู่ในพื้นที่ | the part runs off the frame edge — the photo is unusable | operator re-shoots |
-
-Two of these exist because of distinctions that matter on the floor:
+| Verdict | Shown to operator | What it means |
+|---|---|---|
+| **PASS** | ผ่าน | every sheet check is within limits |
+| **FAIL** | ไม่ผ่าน | a sheet check failed — the report names which and by how much |
+| **RETAKE** | จัดชิ้นส่วนให้อยู่ในพื้นที่ | the part runs off the frame edge — the photo is unusable |
 
 **RETAKE is not FAIL.** A clipped photo tells you nothing about the part.
 Calling it a defect would send an operator to scrap a part that was never
 actually inspected.
 
-**REVIEW is not FAIL either.** The model sees defects the inspection sheet
-doesn't mention — one test part had a left-side defect scoring 180 while every
-sheet check passed. Rejecting on that would be the machine inventing a rule QC
-never wrote, so the sheet stays the only ground for rejection. But throwing the
-signal away is wasteful, so the part goes to a person instead, with the heatmap
-circling what triggered it.
+**Scope is the inspection sheet, nothing else.** A separate station upstream
+catches general defects — dents, scratches, damage. So a big scratch that
+isn't on the sheet is deliberately out of scope here, and this system stays
+silent about it.
 
 ---
 
@@ -459,10 +454,13 @@ Four good images, six test images, four NG. Threshold 20.0, `input_size` 1120.
 | Image | Truth | Verdict | Score |
 |---|---|---|---|
 | image_1–3 | NG (mark missing/holed) | FAIL | 68.9–90.3 |
-| image_4 | NG, but **not a sheet check** | REVIEW | 180.8 off-ROI |
+| image_4 | OK for this station* | PASS | 9.6 |
 | image_5–6 | OK | PASS | 3.0–8.3 |
 
 Golden parts score **1.49** here, so the NG margin is roughly 46×.
+
+\* image_4 has a real defect on its left side, but no sheet check covers
+that region — the upstream station's job, not this one's.
 
 ### Experiments
 

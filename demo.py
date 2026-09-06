@@ -19,9 +19,11 @@ import cv2
 import gradio as gr
 import numpy as np
 
+from inspector import metrics as met
+from inspector import metricsviz as mviz
 from inspector import subspace as sub_mod
 from inspector import viz
-from inspector.config import (GOLDEN_DIR, TEST_DIR, PipelineConfig,
+from inspector.config import (DATA_DIR, GOLDEN_DIR, TEST_DIR, PipelineConfig,
                               fit_signature)
 from inspector.inspect import inspect_image
 from inspector.pipeline import load_image
@@ -317,6 +319,154 @@ def do_inspect(test_file, roi_mode, roi_text, threshold, state):
     return (_to_rgb(heat), _to_rgb(stages), "\n".join(lines), timing)
 
 
+# ---------------------------------------------------------------- panel 5
+
+def _read_labels(sku: str) -> dict[str, int]:
+    """Ground truth from data/labels/<sku>.csv (`image,label`, 1 = NG)."""
+    path = DATA_DIR / "labels" / f"{sku}.csv"
+    if not path.exists():
+        return {}
+    out = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 2 or parts[1] in ("", "?"):
+            continue
+        try:
+            out[parts[0]] = int(parts[1])
+        except ValueError:
+            continue                      # header row
+    return out
+
+
+def do_evaluate(sku, roi_mode, roi_text, threshold, state,
+                progress=gr.Progress()):
+    """Score every labelled test image ONCE; metrics then move with the slider.
+
+    Scoring is the slow part, so it happens here and the results are cached in
+    session state. Dragging the threshold afterwards is pure arithmetic.
+    """
+    reg = state.get("reg")
+    if reg is None:
+        return (state, "Fit the subspace first (Panel 1).", None, None, None,
+                None, None, "")
+
+    labels = _read_labels(sku)
+    if not labels:
+        return (state,
+                f"No ground truth at data/labels/{sku}.csv.\n\n"
+                f"Format: `image,label` with 1 = NG and 0 = OK. Without it "
+                f"there is nothing to measure the scores against.",
+                None, None, None, None, None, "")
+
+    folder = TEST_DIR / sku
+    paths = [p for p in sorted(folder.glob("*"))
+             if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp"}
+             and p.name in labels]
+    if not paths:
+        return (state, f"No labelled images found in {folder}.",
+                None, None, None, None, None, "")
+
+    cfg = state["cfg"]
+    canvas = reg["canvas_size"]
+    try:
+        rois = [] if roi_mode == WHOLE_PART_MODE else parse_rois(roi_text, canvas)
+    except ValueError as exc:
+        return (state, f"Could not parse the ROI table: {exc}",
+                None, None, None, None, None, "")
+    sku_cfg = SKUConfig(sku=sku, canvas_size=canvas, rois=rois,
+                        threshold=float(threshold))
+
+    scores, ys, names, retakes = [], [], [], []
+    for i, p in enumerate(paths):
+        progress(i / len(paths), desc=f"scoring {p.name}")
+        res = inspect_image(load_image(p), reg, sku_cfg, cfg, source=p.name)
+        if res.verdict == "RETAKE":
+            # Nothing was learned about this part; counting it either way
+            # would be inventing an outcome.
+            retakes.append(p.name)
+            continue
+        scores.append(res.max_score)
+        ys.append(labels[p.name])
+        names.append(p.name)
+
+    if not scores:
+        return (state, "Every image was RETAKE -- nothing could be scored.",
+                None, None, None, None, None, "")
+
+    state = dict(state)
+    state["eval"] = {"scores": scores, "labels": ys, "names": names,
+                     "retakes": retakes, "sku": sku}
+
+    figs = _render_metrics(state["eval"], float(threshold))
+    note = (f"Scored {len(scores)} labelled images "
+            f"({sum(ys)} NG, {len(ys) - sum(ys)} OK)"
+            + (f", {len(retakes)} excluded as RETAKE: "
+               f"{', '.join(retakes)}" if retakes else "")
+            + ".\n\nThe threshold slider now updates the metrics instantly -- "
+              "no re-scoring.")
+    return (state, note) + figs
+
+
+def do_rescore(threshold, state):
+    """Recompute metrics at a new threshold from the cached scores."""
+    ev = state.get("eval")
+    if not ev:
+        return (None, None, None, None, None, "")
+    return _render_metrics(ev, float(threshold))
+
+
+def _render_metrics(ev, threshold):
+    scores, ys, names = ev["scores"], ev["labels"], ev["names"]
+    c = met.confusion_at(scores, ys, threshold, ev.get("retakes"))
+    rows = met.sweep(scores, ys)
+    sug = met.suggest_threshold(scores, ys, min_capture=1.0)
+    fpr, tpr, auc = met.roc(scores, ys)
+
+    table = [[r["Metric"], r["Engineering name"], r["Formula"],
+              r["Value"], r["Counts"], r["Want"]] for r in c.as_rows()]
+
+    lines = [
+        f"**At threshold {threshold:.2f}** — "
+        f"capture {met._pct(c.capture_rate)}, "
+        f"false alarm {met._pct(c.false_alarm_rate)}, "
+        f"review load {met._pct(c.review_load)}",
+        "",
+        "To make the system better: **capture rate UP, false alarm rate DOWN.** "
+        "They pull against each other, so every threshold is a compromise.",
+    ]
+    if c.fn:
+        missed = [n for n, s, y in zip(names, scores, ys)
+                  if y == 1 and s <= threshold]
+        lines += ["", f"**{c.fn} MISSED defect(s):** {', '.join(missed)} — "
+                      f"a missed NG normally costs far more than a false alarm."]
+    if sug:
+        lines += ["", f"Lowest false alarm rate that still catches every NG: "
+                      f"**threshold {sug['threshold']:.2f}** "
+                      f"({met._pct(sug['false_alarm_rate'])} false alarms)."]
+    else:
+        lines += ["", "**No threshold catches every NG** — the score "
+                      "distributions overlap, so no operating point separates "
+                      "them. More or better golden images is the fix, not a "
+                      "different threshold."]
+    sep = met.separation(scores, ys)
+    if np.isfinite(sep):
+        lines += ["", f"Separation {sep:.2f} · AUROC "
+                      + (f"{auc:.3f}" if np.isfinite(auc) else "n/a")
+                      + ". A high AUROC with a small separation means the "
+                        "ranking is right but the margin is thin."]
+
+    return (mviz.confusion_matrix(c),
+            table,
+            mviz.sweep_chart(rows, current=threshold,
+                             suggested=sug["threshold"] if sug else None),
+            mviz.score_distribution(scores, ys, names, threshold),
+            mviz.roc_chart(fpr, tpr, auc),
+            "\n".join(lines))
+
+
 def load_examples(sku, which):
     folder = (GOLDEN_DIR if which == "golden" else TEST_DIR) / sku
     if not folder.exists():
@@ -423,6 +573,38 @@ def build_ui():
                                                 "aligned -> ROI crops",
                                           height=260)
 
+                with gr.Tab("5. Metrics"):
+                    gr.Markdown(
+                        "Scores every **labelled** image in "
+                        "`test_images/<sku>/` against "
+                        "`data/labels/<sku>.csv` (`image,label`, 1 = NG).\n\n"
+                        "Scoring runs once; after that the threshold slider "
+                        "updates everything instantly. RETAKE images are "
+                        "excluded — an unusable photo says nothing about the "
+                        "part."
+                    )
+                    with gr.Row():
+                        eval_sku = gr.Dropdown(skus, value=skus[0] if skus else None,
+                                               label="SKU", scale=2)
+                        eval_btn = gr.Button("Evaluate", variant="primary",
+                                             scale=1)
+                    eval_status = gr.Markdown()
+                    metrics_table = gr.Dataframe(
+                        headers=["Metric", "Engineering name", "Formula",
+                                 "Value", "Counts", "Want"],
+                        label="the three numbers that decide if this is usable",
+                        wrap=True, interactive=False,
+                    )
+                    metrics_note = gr.Markdown()
+                    with gr.Row():
+                        cm_img = gr.Image(label="confusion matrix", height=380)
+                        roc_img = gr.Image(label="ROC", height=380)
+                    sweep_img = gr.Image(label="capture rate vs false alarm "
+                                               "rate across thresholds",
+                                         height=380)
+                    dist_img = gr.Image(label="score of every part, by true "
+                                              "label", height=340)
+
         ctrl = [backbone, input_size, tau, aggregation, position_norm, ink_on,
                 align_on, segmenter, coverage, threshold]
 
@@ -447,6 +629,17 @@ def build_ui():
             [test_file, roi_mode, roi_text, threshold, state],
             [heat_img, stages_img, verdict_md, timing_box],
         )
+
+        metric_out = [cm_img, metrics_table, sweep_img, dist_img, roc_img,
+                      metrics_note]
+        eval_btn.click(
+            do_evaluate,
+            [eval_sku, roi_mode, roi_text, threshold, state],
+            [state, eval_status] + metric_out,
+        )
+        # Moving the threshold recomputes from cached scores -- no re-scoring,
+        # which is what makes the trade-off explorable rather than a wait.
+        threshold.change(do_rescore, [threshold, state], metric_out)
     return app
 
 

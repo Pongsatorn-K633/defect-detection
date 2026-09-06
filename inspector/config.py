@@ -150,31 +150,18 @@ class PipelineConfig:
     # Part-level verdict threshold on the aggregated ROI z-score.
     threshold: float = 6.0
 
-    # REVIEW tier: a part may only be REJECTED on a check that appears on the
-    # inspection sheet -- rejecting on anything else would be the machine
-    # inventing a rule QC never wrote. But the subspace does see defects
-    # outside those boxes, and discarding that is wasteful. So a high score
-    # outside every ROI raises REVIEW and sends the part to a human, who
-    # remains the only authority for anything off-sheet.
+    # Scope: this station answers the INSPECTION SHEET, nothing else.
     #
-    # Expressed as a multiple of the worst score the GOLDEN parts produced
-    # outside the ROIs, so it adapts per SKU instead of being one global
-    # number that means different things on different parts.
-    review_enabled: bool = True
-    review_sigma: float = 8.0
-    # Never review below this absolute score, however quiet the golden set is.
+    # A separate inspection station upstream catches general defects -- dents,
+    # scratches, damage. So an anomaly outside the sheet's ROIs is not this
+    # system's business, and flagging it would only add noise to a queue
+    # someone else already handles. Verdicts are therefore PASS, FAIL and
+    # RETAKE only.
     #
-    # This floor is doing more work than it looks. With a small golden set the
-    # off-ROI baseline is badly optimistic: on the sample SKUs golden parts
-    # score ~1.5-2.0 off-ROI while known-GOOD test parts score 14-30, because
-    # a handful of golden images does not span the lighting. A bar derived
-    # from the golden set alone therefore reviews every part, and an alarm
-    # that always fires is worse than none -- operators stop reading it.
-    #
-    # Raise the golden set to 8-16 varied images and this floor stops being
-    # the binding constraint; until then it is what keeps the review rate
-    # sane. Tune it against real production parts, not against golden ones.
-    review_floor: float = 60.0
+    # (An earlier REVIEW tier surfaced off-sheet anomalies to a human. It was
+    # removed deliberately, not because it failed -- it correctly caught a
+    # left-side defect scoring 180 -- but because that defect is the upstream
+    # station's job. Narrow scope beats a second opinion nobody asked for.)
 
     def to_dict(self) -> dict:
         return asdict(self)
