@@ -164,9 +164,10 @@ its center — the residual alone would miss those.
 ### ROIs: the part that makes it actually work
 
 Scoring the whole part **doesn't work well** — measured, not assumed:
-whole-part AUROC was **0.667**, barely better than a coin flip. The defect is
-real but drowned out by edge and lighting noise across the rest of the
-silhouette.
+whole-part AUROC was **0.867** against ROI-scoped **1.000**, and the naive
+full-frame baseline only **0.556** — barely better than a coin flip. The
+defect is real but drowned out by edge and lighting noise across the rest of
+the silhouette.
 
 Instead, draw a box around each check on your paper inspection sheet — "tab
 must be present at top-right", "top-left corner must be chamfered" — and score
@@ -191,7 +192,7 @@ flowchart LR
     VER -->|no| PASS["✅ PASS"]
     VER -->|yes| FAIL["🔴 FAIL<br/><i>says which box,<br/>and by how much</i>"]
 
-    WHOLE["✗ scoring the<br/>WHOLE part instead"] -.->|"AUROC 0.667 — coin flip"| X["defect drowned out by<br/>edge + lighting noise<br/>across the rest of the part"]
+    WHOLE["✗ scoring the<br/>WHOLE part instead"] -.->|"AUROC 0.867 vs 1.000"| X["defect drowned out by<br/>edge + lighting noise<br/>across the rest of the part"]
 
     style SHEET fill:#fffde7,stroke:#f57f17,color:#000
     style BOXES fill:#e8eaf6,stroke:#3949ab,color:#000
@@ -329,9 +330,18 @@ raw → mask → ink → aligned → heatmap.
 python demo.py
 ```
 
-Opens at `http://127.0.0.1:7860`. Four tabs: upload reference images and fit;
+Opens at `http://127.0.0.1:7860`. Five tabs: upload reference images and fit;
 define ROIs (or pick "whole part" to see the baseline fail); upload a test
-image; read the verdict, scores, heatmap, and every intermediate stage.
+image; read the verdict, scores, heatmap, and every intermediate stage; and
+measure the whole labelled test set.
+
+**Tab 5 — Metrics** is where you answer "is this good enough for a line?".
+Point it at a SKU and it scores every labelled image in `test_images/<sku>/`
+against `data/labels/<sku>.csv`, then reports capture rate, false alarm rate
+and review load with a confusion matrix, a threshold sweep, a score
+distribution and an ROC curve. Scoring happens once; **the threshold slider
+then updates everything in about half a second**, so the trade-off is
+something you can feel rather than re-run.
 
 The sidebar exposes every knob that changes a result — backbone, resolution,
 PCA threshold, aggregation, position normalization, ink masking, **alignment
@@ -382,6 +392,23 @@ python -m experiments.exp5_reference_count_sweep --sku 8983864641     # how many
 ```
 
 Run Experiment 1 first — if alignment fails, every other number is noise.
+
+### Measure it
+
+`python demo.py` → tab **5. Metrics** → pick a SKU → **Evaluate**.
+
+You get capture rate, false alarm rate and review load, a confusion matrix, and
+three charts. Then drag the threshold slider and watch them move — it
+recomputes from cached scores, so there is no wait.
+
+The chart to look at is the **score distribution**. Summary metrics can look
+healthy while the nearest good and bad parts sit almost on top of each other,
+and that plot names both and states the gap. On SKU 8983864641 that gap is
+about 2 points; on 8983980631 it is comfortable. Same 100%/0% headline, very
+different robustness.
+
+Needs `data/labels/<sku>.csv` (`image,label`, 1 = NG). Both sample SKUs have
+one already.
 
 ### Feel the knobs
 
@@ -449,7 +476,7 @@ Six good images, nine test images, three NG. Threshold 12.0.
 
 ### SKU 8983980631 — Mark RH present
 
-Four good images, six test images, four NG. Threshold 20.0, `input_size` 1120.
+Four good images, six test images, three NG. Threshold 20.0, `input_size` 1120.
 
 | Image | Truth | Verdict | Score |
 |---|---|---|---|
@@ -459,8 +486,27 @@ Four good images, six test images, four NG. Threshold 20.0, `input_size` 1120.
 
 Golden parts score **1.49** here, so the NG margin is roughly 46×.
 
-\* image_4 has a real defect on its left side, but no sheet check covers
-that region — the upstream station's job, not this one's.
+\* image_4 has a real defect on its left side, but no sheet check covers that
+region — the upstream station's job, not this one's. The label says what a
+human would decide *here*, which is the only thing worth measuring against.
+
+### The three numbers that decide usability
+
+Both SKUs at their configured thresholds, from the demo's **Metrics** tab:
+
+| | Capture rate | False alarm rate | Review load | Separation |
+|---|---|---|---|---|
+| 8983864641 | 100% (3/3 NG) | 0% (0/5 OK) | 37.5% | 1.54 |
+| 8983980631 | 100% (3/3 NG) | 0% (0/3 OK) | 50.0% | 8.95 |
+
+**Capture rate should go up, false alarm rate down — and they pull against
+each other.** Lowering the threshold catches more defects and stops more good
+parts, so any single setting is a compromise.
+
+Read the separation column alongside the rates. Both SKUs show 100%/0%, but
+8983864641's nearest OK and NG parts sit only ~2 points apart, while
+8983980631 has a comfortable margin. The first will be the first to break as
+more parts arrive.
 
 ### Experiments
 
@@ -528,6 +574,8 @@ inspector/
   pipeline.py    THE shared preprocessing path
   features.py    frozen DINOv2 patch features
   subspace.py    PCA fit, residual + Mahalanobis scoring, contamination screen
+  metrics.py     capture rate / false alarm rate / review load, sweeps, ROC
+  metricsviz.py  confusion matrix and metric charts
   geometry.py    silhouette measurements for shape checks
   roi.py         SKU config and ROI definitions
   register.py    stage 1 - build a SKU model
