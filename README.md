@@ -398,6 +398,8 @@ Upload golden images → **Fit subspace** (~2 min) → upload a test image →
 **Inspect** (~1 s). Refitting only happens when the reference set or the
 backbone/resolution/tau changes, so you can flip through test images freely.
 
+**Full walkthrough of every tab and control: [docs/DEMO_GUIDE.md](docs/DEMO_GUIDE.md).**
+
 Start by turning **alignment off** and inspecting again. Watching the good
 parts light up is the fastest way to understand why the pipeline is shaped the
 way it is.

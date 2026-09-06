@@ -350,8 +350,11 @@ def build_ui():
                                         value="birefnet", label="segmenter")
                 backbone = gr.Dropdown(["vits14", "vitb14", "vitl14", "vitg14"],
                                        value="vitl14", label="backbone")
-                input_size = gr.Dropdown([448, 512, 672], value=672,
-                                         label="input resolution")
+                input_size = gr.Dropdown(
+                    [448, 512, 672, 896, 1120], value=672,
+                    label="input resolution",
+                    info="higher = more patches per ROI. A small check on a "
+                         "thin part can need 1120; see SKU 8983980631")
                 tau = gr.Slider(0.90, 0.99, value=0.97, step=0.01,
                                 label="PCA variance threshold tau")
                 aggregation = gr.Dropdown(
