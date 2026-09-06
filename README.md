@@ -224,12 +224,27 @@ Both run **the identical preprocessing code path** — one function,
 `pipeline.preprocess()`, called by both. If they ever diverged, the model would
 be comparing against something subtly different from what it learned.
 
-### Three possible verdicts
+### Four possible verdicts
 
-- **PASS** — every ROI scored below threshold
-- **FAIL** — an ROI exceeded threshold; the report says which and by how much
-- **INVALID** — the part runs off the frame edge. A photography problem, not a
-  defective part. The operator retakes the photo; nobody scraps a good part.
+| Verdict | Shown to operator | What it means | Who decides |
+|---|---|---|---|
+| **PASS** | ผ่าน | every sheet check is within limits | machine |
+| **FAIL** | ไม่ผ่าน | a sheet check failed — the report names which and by how much | machine |
+| **REVIEW** | แนะนำให้ตรวจสอบอีกครั้ง | sheet checks pass, but something *outside* them scores high | **a human** |
+| **RETAKE** | จัดชิ้นส่วนให้อยู่ในพื้นที่ | the part runs off the frame edge — the photo is unusable | operator re-shoots |
+
+Two of these exist because of distinctions that matter on the floor:
+
+**RETAKE is not FAIL.** A clipped photo tells you nothing about the part.
+Calling it a defect would send an operator to scrap a part that was never
+actually inspected.
+
+**REVIEW is not FAIL either.** The model sees defects the inspection sheet
+doesn't mention — one test part had a left-side defect scoring 180 while every
+sheet check passed. Rejecting on that would be the machine inventing a rule QC
+never wrote, so the sheet stays the only ground for rejection. But throwing the
+signal away is wasteful, so the part goes to a person instead, with the heatmap
+circling what triggered it.
 
 ---
 
@@ -338,33 +353,145 @@ The UI reports them separately so they don't get conflated.
 ### Worth trying in the UI
 
 - Turn **alignment off** → watch the failure mode the whole design guards against
-- Switch ROI mode to **whole part** → AUROC collapses 1.000 → 0.667
+- Switch ROI mode to **whole part** → AUROC collapses 1.000 → 0.867
 - Switch aggregation to **top-1% TVaR** → watch small defects get averaged away
 - Turn **ink masking off** → watch pen strokes become the top anomaly
 
 ---
 
-## Results on the sample data (SKU 8983864641)
+## Start testing in 5 minutes
 
-Six good images, nine test images, two defective (square top-left corner and a
-bent-up top-right tab — both checks on the inspection sheet).
+Both sample SKUs are already registered, so you can see results immediately —
+no setup beyond the conda environment.
+
+### Just show me it working
+
+```bash
+python -m inspector.inspect --sku 8983864641
+python -m inspector.inspect --sku 8983980631
+```
+
+Prints a verdict per image in about 20 seconds (after the one-time model
+download). Then open `outputs/inspect/<sku>/` — one PNG per part showing
+raw → mask → ink → aligned → heatmap. **Look at the heatmaps**: on a FAIL the
+hot spot should sit on the actual defect. If it doesn't, the verdict is right
+by luck and shouldn't be trusted.
+
+### Prove it isn't cheating
+
+```bash
+python -m experiments.exp1_alignment_repeatability --sku 8983864641   # must PASS
+python -m experiments.exp2_roi_vs_fullframe --sku 8983864641          # the go/no-go
+python -m experiments.exp3_threshold_sweep --sku 8983864641           # where to set the threshold
+python -m experiments.exp5_reference_count_sweep --sku 8983864641     # how many golden images
+```
+
+Run Experiment 1 first — if alignment fails, every other number is noise.
+
+### Feel the knobs
+
+```bash
+python demo.py
+```
+
+Upload golden images → **Fit subspace** (~2 min) → upload a test image →
+**Inspect** (~1 s). Refitting only happens when the reference set or the
+backbone/resolution/tau changes, so you can flip through test images freely.
+
+Start by turning **alignment off** and inspecting again. Watching the good
+parts light up is the fastest way to understand why the pipeline is shaped the
+way it is.
+
+### Test your own parts
+
+1. Drop 8–16 good photos in `normal_images/<sku>/` — **vary the lighting**,
+   don't just take more shots of the same setup.
+2. `python -m experiments.exp1_alignment_repeatability --sku <sku>` → must PASS
+   before anything else is meaningful.
+3. `python -m inspector.register --sku <sku> --segmenter birefnet`
+4. `python -m inspector.annotate --sku <sku>` → drag one box per check on your
+   inspection sheet, name it, pick appearance or geometry.
+5. `python -m inspector.register --sku <sku> --segmenter birefnet` again, so
+   geometry nominals get measured for the new boxes.
+6. Drop test photos in `test_images/<sku>/` and inspect.
+
+To get a real threshold rather than the default, label a few test images in
+`data/labels/<sku>.csv` (`image,label` — 1 = NG) and run Experiment 3.
+
+### If something looks wrong
+
+| Symptom | Likely cause |
+|---|---|
+| Everything FAILs | golden set too small or too uniform — check the fit warnings |
+| Scores unstable, one patch spikes | ROI holds too few patches → raise `input_size` for that SKU |
+| Good parts flagged | threshold below the golden max, or lighting not covered by the golden set |
+| Alignment PASS but bad heatmaps | check the ink mask — pen strokes read as anomalies if missed |
+| `cuda False` | CPU-only torch installed; see Setup |
+
+The fit output always reports **valid patch count** and **retained components
+`r`**. When behaviour is odd, those two numbers usually explain it.
+
+---
+
+## Results on the sample data
+
+**All 15 test images across both SKUs classify correctly**, against ground
+truth supplied by QC.
+
+### SKU 8983864641 — tab present, corner chamfered
+
+Six good images, nine test images, three NG. Threshold 12.0.
+
+| Image | Truth | Verdict | Score |
+|---|---|---|---|
+| image_1 | NG (tab missing) | FAIL | 13.14 |
+| image_2 | NG (corner square) | FAIL | 18.76 |
+| image_3 | good part, bad photo | RETAKE | — |
+| image_4 | NG (bent flap) | FAIL | 41.99 |
+| image_5–9 | OK | PASS | 4.8–11.0 |
+
+### SKU 8983980631 — Mark RH present
+
+Four good images, six test images, four NG. Threshold 20.0, `input_size` 1120.
+
+| Image | Truth | Verdict | Score |
+|---|---|---|---|
+| image_1–3 | NG (mark missing/holed) | FAIL | 68.9–90.3 |
+| image_4 | NG, but **not a sheet check** | REVIEW | 180.8 off-ROI |
+| image_5–6 | OK | PASS | 3.0–8.3 |
+
+Golden parts score **1.49** here, so the NG margin is roughly 46×.
+
+### Experiments
 
 | Experiment | Result |
 |---|---|
-| 1 — alignment repeatability | **PASS** — mean IoU 0.967, mean drift 1.75 px, max 3.15 px (criterion: IoU > 0.95, drift < 5 px) |
-| 2 — ROI vs whole part vs full frame | **ROI-cropped AUROC 1.000** vs whole-part 0.667 vs full-frame 0.667 |
-| 3 — threshold sweep | 100% recall at **0% false-call rate**, threshold ≈ 18.6 (set to 16.0 for margin) |
-| 4 — specular sensitivity | not run — needs the varied-lighting photo set |
+| 1 — alignment repeatability | **PASS** — mean IoU 0.967, drift 1.75 px (criterion: IoU > 0.95, drift < 5 px) |
+| 2 — ROI vs whole part vs full frame | **ROI AUROC 1.000** vs whole-part 0.867 vs full-frame 0.556 |
+| 3 — threshold sweep | 100% recall at **0% false-call rate** |
+| 4 — specular sensitivity | **not run** — needs the varied-lighting photo set |
 | 5 — reference count | at k=3, **varied images AUROC 1.000, near-duplicates 0.333** |
-
-At threshold 16.0: both defective parts caught, all six good parts pass, the
-off-frame photo flagged INVALID rather than FAIL.
 
 Experiment 2 is the go/no-go, and it's unambiguous: **ROI cropping is what
 makes this work.**
 
-Segmenter comparison on the same data — BiRefNet IoU 0.967 / drift 1.75 px
-(passes) vs classical 0.935 / 4.66 px (fails). The download earns its place.
+Segmenter comparison — BiRefNet IoU 0.967 / drift 1.75 px (passes) vs
+classical 0.935 / 4.66 px (fails). The download earns its place.
+
+### Two things the sample data taught us
+
+**Resolution beats box tuning.** On SKU 8983980631 the Mark RH box held only
+~16 patches at the 672 default, so the verdict rode on the single worst patch
+— and a good part scored 12.6 against a defective one at 17.6, the same
+profile one noisy patch apart. Three different box sizes gave *identical*
+results, because the canvas is 438 px tall and the differences were smaller
+than one patch. Raising that SKU to `input_size` 1120 gave 27–50 patches and
+turned the margin into 46×. Hence the per-SKU `input_size` override.
+
+**Coverage beats count.** At the same k=3 golden images, deliberately varied
+lighting gave AUROC 1.000 while near-duplicates gave 0.333 — worse than
+chance. When collecting golden sets, vary the lighting and highlight
+positions; don't just take more shots of the same setup.
 
 ---
 
