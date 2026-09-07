@@ -1,0 +1,696 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  /* The artifact host supplied these; a standalone file needs them itself. */
+  html { color-scheme: light dark; }
+  body { margin: 0; }
+  img { max-width: 100%; }
+  [hidden] { display: none !important; }
+</style>
+<title>Two Branches, One Spine</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+</head>
+<body>
+<style>
+  :root {
+    --ground: #F2F1EC;
+    --surface: #FBFAF7;
+    --sunken: #E7E6DF;
+    --ink: #1A1C16;
+    --ink-soft: #5A5E52;
+    --ink-faint: #8B8F82;
+    --rule: #D2D2C8;
+    --rule-firm: #B4B5A8;
+    --appearance: #1D6FB8;
+    --geometry: #3D8C1F;
+    --retake: #B4650F;
+    --app-wash: rgba(29, 111, 184, 0.09);
+    --geo-wash: rgba(61, 140, 31, 0.09);
+    --ret-wash: rgba(180, 101, 15, 0.10);
+    --shadow: 0 1px 2px rgba(26, 28, 22, .06), 0 8px 24px -12px rgba(26, 28, 22, .18);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #12140F;
+      --surface: #1B1E17;
+      --sunken: #0C0E0A;
+      --ink: #E8E8E0;
+      --ink-soft: #A2A79A;
+      --ink-faint: #6E7367;
+      --rule: #2E322A;
+      --rule-firm: #454A3E;
+      --appearance: #5FAFEE;
+      --geometry: #7ACB55;
+      --retake: #E5A24C;
+      --app-wash: rgba(95, 175, 238, 0.13);
+      --geo-wash: rgba(122, 203, 85, 0.13);
+      --ret-wash: rgba(229, 162, 76, 0.13);
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.7);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #12140F;
+    --surface: #1B1E17;
+    --sunken: #0C0E0A;
+    --ink: #E8E8E0;
+    --ink-soft: #A2A79A;
+    --ink-faint: #6E7367;
+    --rule: #2E322A;
+    --rule-firm: #454A3E;
+    --appearance: #5FAFEE;
+    --geometry: #7ACB55;
+    --retake: #E5A24C;
+    --app-wash: rgba(95, 175, 238, 0.13);
+    --geo-wash: rgba(122, 203, 85, 0.13);
+    --ret-wash: rgba(229, 162, 76, 0.13);
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.7);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: "Source Serif 4", Georgia, "Times New Roman", serif;
+    font-size: 17px;
+    line-height: 1.6;
+    margin: 0;
+    padding: 0 clamp(16px, 4vw, 40px) 96px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 1180px; margin: 0 auto; }
+
+  .mono {
+    font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+
+  /* ---------- masthead ---------- */
+  header.masthead {
+    padding: clamp(40px, 7vw, 76px) 0 0;
+    border-bottom: 2px solid var(--ink);
+    margin-bottom: 40px;
+  }
+  .eyebrow {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 11.5px;
+    font-weight: 500;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0 0 18px;
+  }
+  h1 {
+    font-family: Archivo, "Helvetica Neue", Arial, sans-serif;
+    font-weight: 700;
+    font-size: clamp(38px, 7vw, 68px);
+    line-height: 1.0;
+    letter-spacing: -.028em;
+    margin: 0 0 20px;
+    text-wrap: balance;
+  }
+  .standfirst {
+    font-size: clamp(18px, 2.2vw, 21px);
+    line-height: 1.5;
+    color: var(--ink-soft);
+    max-width: 62ch;
+    margin: 0 0 34px;
+  }
+  .standfirst strong { color: var(--ink); font-weight: 600; }
+
+  /* ---------- section headings ---------- */
+  section { margin-top: 72px; }
+  .sec-head {
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    flex-wrap: wrap;
+    border-bottom: 1px solid var(--rule-firm);
+    padding-bottom: 10px;
+    margin-bottom: 12px;
+  }
+  .sec-head h2 {
+    font-family: Archivo, Arial, sans-serif;
+    font-weight: 600;
+    font-size: clamp(24px, 3.4vw, 33px);
+    letter-spacing: -.018em;
+    margin: 0;
+  }
+  .sec-head .cmd {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 12.5px;
+    color: var(--ink-faint);
+  }
+  .lede {
+    color: var(--ink-soft);
+    max-width: 68ch;
+    margin: 0 0 28px;
+    font-size: 16.5px;
+  }
+
+  /* ---------- figures ---------- */
+  figure {
+    margin: 0 0 8px;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: clamp(14px, 2.4vw, 26px);
+    box-shadow: var(--shadow);
+  }
+  .scroller { overflow-x: auto; overflow-y: hidden; }
+  figure svg { display: block; width: 100%; min-width: 780px; height: auto; }
+  figcaption {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid var(--rule);
+    font-size: 14.5px;
+    line-height: 1.5;
+    color: var(--ink-soft);
+    max-width: 78ch;
+  }
+  figcaption b { color: var(--ink); font-weight: 600; }
+
+  /* svg type */
+  .s-label { font-family: Archivo, Arial, sans-serif; font-size: 13px; font-weight: 600; }
+  .s-sub   { font-family: "JetBrains Mono", monospace; font-size: 10.5px; }
+  .s-edge  { font-family: "JetBrains Mono", monospace; font-size: 10px; }
+  .s-step  { font-family: "JetBrains Mono", monospace; font-size: 10px; font-weight: 700; letter-spacing: .1em; }
+  .s-branch{ font-family: Archivo, Arial, sans-serif; font-size: 11.5px; font-weight: 700; letter-spacing: .1em; }
+
+  /* Markers resolve paint in their own context, so a var() inside one would not
+     follow the referencing line. Each lane sets `color`, the marker uses
+     currentColor, and both stay correct in either theme. */
+  .lane-a { color: var(--appearance); }
+  .lane-g { color: var(--geometry); }
+  .lane-r { color: var(--retake); }
+
+  /* ---------- callout ---------- */
+  .callout {
+    border-left: 3px solid var(--retake);
+    background: var(--ret-wash);
+    padding: 16px 20px;
+    margin: 28px 0 0;
+    border-radius: 0 3px 3px 0;
+    font-size: 16px;
+    max-width: 76ch;
+  }
+  .callout p { margin: 0; }
+  .callout .tag {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .14em;
+    color: var(--retake);
+    display: block;
+    margin-bottom: 6px;
+  }
+
+  /* ---------- comparison table ---------- */
+  .tbl-scroll { overflow-x: auto; margin-top: 8px; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 620px;
+    font-size: 15px;
+  }
+  caption {
+    text-align: left;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11.5px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    padding-bottom: 12px;
+  }
+  th, td {
+    text-align: left;
+    padding: 13px 16px;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  thead th { border-bottom: 1.5px solid var(--rule-firm); }
+  tbody th {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11.5px;
+    font-weight: 500;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    width: 20%;
+  }
+  .col-app, .col-geo {
+    font-family: Archivo, Arial, sans-serif;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+  }
+  .col-app { color: var(--appearance); }
+  .col-geo { color: var(--geometry); }
+  td.app { background: var(--app-wash); }
+  td.geo { background: var(--geo-wash); }
+  td code, p code, li code, figcaption code {
+    font-family: "JetBrains Mono", monospace;
+    font-size: .87em;
+    background: var(--sunken);
+    padding: 1px 5px;
+    border-radius: 2px;
+  }
+
+  /* ---------- pairing note ---------- */
+  .pair {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    margin-top: 24px;
+    overflow: hidden;
+  }
+  .pair > div { background: var(--surface); padding: 18px 20px; }
+  .pair .roi {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 13.5px;
+    font-weight: 700;
+    margin: 0 0 4px;
+  }
+  .pair .roi.a { color: var(--appearance); }
+  .pair .roi.g { color: var(--geometry); }
+  .pair .box {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11.5px;
+    color: var(--ink-faint);
+    margin: 0 0 10px;
+  }
+  .pair .what { margin: 0; font-size: 14.5px; line-height: 1.45; color: var(--ink-soft); }
+
+  footer {
+    margin-top: 80px;
+    padding-top: 18px;
+    border-top: 1px solid var(--rule);
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11.5px;
+    color: var(--ink-faint);
+    line-height: 1.7;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    a { transition: color .15s ease; }
+  }
+  :focus-visible { outline: 2px solid var(--appearance); outline-offset: 2px; }
+</style>
+
+<div class="wrap">
+
+<header class="masthead">
+  <p class="eyebrow">Defect Inspection · SubspaceAD over frozen DINOv2</p>
+  <h1>Two Branches, One Spine</h1>
+  <p class="standfirst">
+    Registration and inference run an <strong>identical</strong> preprocessing path — enforced structurally,
+    because <code>pipeline.py</code> is the only implementation and both stages call it. They diverge in exactly
+    one place: the ROI loop, where <strong>appearance</strong> reads patch vectors and <strong>geometry</strong>
+    reads the silhouette mask. The two never touch each other's data.
+  </p>
+</header>
+
+<section>
+  <div class="sec-head">
+    <h2>Registration</h2>
+    <span class="cmd">python -m inspector.register --sku &lt;SKU&gt;</span>
+  </div>
+  <p class="lede">
+    Builds the normal model from golden photos. No gradient training anywhere — the fitted model is a mean vector
+    and an eigenbasis. Note where <code>sku.json</code> enters: at the <em>start</em>, not the end.
+  </p>
+
+  <figure>
+    <div class="scroller">
+      <svg viewBox="0 0 1120 470" role="img"
+           aria-label="Registration flow: sku.json is read first, then golden photos are preprocessed through segment, ink-mask and align into a canonical canvas. DINOv2 extracts patch features. Geometry ROIs branch off the aligned silhouette mask to fit nominals, while appearance ROIs use the fitted subspace to record golden score distributions. Both are written into model.npz.">
+        <defs>
+          <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 1 L 9 5 L 0 9 z" fill="currentColor"/>
+          </marker>
+          <marker id="ar-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 1 L 9 5 L 0 9 z" fill="currentColor"/>
+          </marker>
+          <marker id="ar-g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 1 L 9 5 L 0 9 z" fill="currentColor"/>
+          </marker>
+        </defs>
+
+        <!-- ============ R0 : sku.json in first ============ -->
+        <rect x="24" y="150" width="150" height="76" rx="3"
+              fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="5 3"/>
+        <text class="s-step" x="34" y="140" fill="var(--ink-faint)">R0</text>
+        <text class="s-label" x="99" y="180" text-anchor="middle" fill="currentColor">sku.json</text>
+        <text class="s-sub" x="99" y="198" text-anchor="middle" fill="var(--ink-soft)">ROI list · input_size</text>
+        <text class="s-sub" x="99" y="213" text-anchor="middle" fill="var(--ink-soft)">read BEFORE fitting</text>
+
+        <line x1="174" y1="188" x2="222" y2="188" stroke="currentColor" stroke-width="1.5" marker-end="url(#ar)"/>
+
+        <!-- ============ R1 : preprocess spine ============ -->
+        <rect x="222" y="120" width="286" height="136" rx="3"
+              fill="var(--sunken)" stroke="var(--rule-firm)" stroke-width="1"/>
+        <text class="s-step" x="232" y="140" fill="var(--ink-faint)">R1 · PREPROCESS</text>
+
+        <rect x="238" y="152" width="82" height="42" rx="2" fill="var(--surface)" stroke="currentColor" stroke-width="1.2"/>
+        <text class="s-sub" x="279" y="170" text-anchor="middle" fill="currentColor">segment</text>
+        <text class="s-sub" x="279" y="184" text-anchor="middle" fill="var(--ink-faint)">birefnet</text>
+
+        <rect x="332" y="152" width="82" height="42" rx="2" fill="var(--surface)" stroke="currentColor" stroke-width="1.2"/>
+        <text class="s-sub" x="373" y="170" text-anchor="middle" fill="currentColor">ink-mask</text>
+        <text class="s-sub" x="373" y="184" text-anchor="middle" fill="var(--ink-faint)">B−R ≥ 22</text>
+
+        <rect x="426" y="152" width="70" height="42" rx="2" fill="var(--surface)" stroke="currentColor" stroke-width="1.2"/>
+        <text class="s-sub" x="461" y="170" text-anchor="middle" fill="currentColor">align</text>
+        <text class="s-sub" x="461" y="184" text-anchor="middle" fill="var(--ink-faint)">ECC</text>
+
+        <line x1="320" y1="173" x2="330" y2="173" stroke="currentColor" stroke-width="1.2" marker-end="url(#ar)"/>
+        <line x1="414" y1="173" x2="424" y2="173" stroke="currentColor" stroke-width="1.2" marker-end="url(#ar)"/>
+        <text class="s-sub" x="365" y="228" text-anchor="middle" fill="var(--ink-soft)">2-pass consensus reference</text>
+        <text class="s-sub" x="365" y="243" text-anchor="middle" fill="var(--ink-faint)">median mask · mean image</text>
+
+        <!-- golden photos in -->
+        <text class="s-sub" x="365" y="104" text-anchor="middle" fill="var(--ink-soft)">golden photos</text>
+        <line x1="365" y1="110" x2="365" y2="118" stroke="currentColor" stroke-width="1.5" marker-end="url(#ar)"/>
+
+        <!-- ============ split from the canvas ============ -->
+        <line x1="508" y1="188" x2="546" y2="188" stroke="currentColor" stroke-width="1.5"/>
+        <circle cx="550" cy="188" r="4" fill="currentColor"/>
+        <text class="s-edge" x="527" y="180" text-anchor="middle" fill="var(--ink-faint)">canvas</text>
+
+        <!-- up to DINOv2 (appearance side) -->
+        <path class="lane-a" d="M 550 188 L 550 92 L 596 92" fill="none" stroke="var(--appearance)" stroke-width="1.6" marker-end="url(#ar-a)"/>
+        <text class="s-edge" x="556" y="128" fill="var(--appearance)">aligned_image</text>
+
+        <!-- down to geometry side -->
+        <path class="lane-g" d="M 550 188 L 550 352 L 596 352" fill="none" stroke="var(--geometry)" stroke-width="1.6" marker-end="url(#ar-g)"/>
+        <text class="s-edge" x="556" y="292" fill="var(--geometry)">aligned_part_mask</text>
+
+        <!-- ============ APPEARANCE LANE ============ -->
+        <text class="s-branch" x="598" y="42" fill="var(--appearance)">APPEARANCE LANE</text>
+        <line class="lane-a" x1="596" y1="52" x2="1096" y2="52" stroke="var(--appearance)" stroke-width="1" opacity=".45"/>
+
+        <rect x="598" y="66" width="128" height="54" rx="3" fill="var(--app-wash)" stroke="var(--appearance)" stroke-width="1.3"/>
+        <text class="s-label" x="662" y="88" text-anchor="middle" fill="var(--appearance)">DINOv2</text>
+        <text class="s-sub" x="662" y="105" text-anchor="middle" fill="var(--ink-soft)">frozen · vitl14</text>
+
+        <line class="lane-a" x1="726" y1="93" x2="758" y2="93" stroke="var(--appearance)" stroke-width="1.5" marker-end="url(#ar-a)"/>
+        <text class="s-edge" x="742" y="84" text-anchor="middle" fill="var(--ink-faint)">1024-D</text>
+
+        <rect x="758" y="66" width="140" height="54" rx="3" fill="var(--app-wash)" stroke="var(--appearance)" stroke-width="1.3"/>
+        <text class="s-label" x="828" y="88" text-anchor="middle" fill="var(--appearance)">fit subspace</text>
+        <text class="s-sub" x="828" y="105" text-anchor="middle" fill="var(--ink-soft)">SVD · τ = 0.97</text>
+
+        <line class="lane-a" x1="898" y1="93" x2="930" y2="93" stroke="var(--appearance)" stroke-width="1.5" marker-end="url(#ar-a)"/>
+
+        <rect x="930" y="66" width="166" height="54" rx="3" fill="none" stroke="var(--appearance)" stroke-width="1.3"/>
+        <text class="s-label" x="1013" y="88" text-anchor="middle" fill="var(--appearance)">μ, C, eigenvalues</text>
+        <text class="s-sub" x="1013" y="105" text-anchor="middle" fill="var(--ink-soft)">patches discarded</text>
+
+        <!-- LOO screen hanging off DINOv2 -->
+        <path class="lane-a" d="M 662 120 L 662 146 L 700 146" fill="none" stroke="var(--appearance)" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#ar-a)"/>
+        <text class="s-sub" x="706" y="143" fill="var(--ink-soft)">leave-one-out screen</text>
+        <text class="s-sub" x="706" y="157" fill="var(--ink-faint)">rejects a contaminated golden (&gt;4σ)</text>
+
+        <!-- golden score distribution -->
+        <path class="lane-a" d="M 828 120 L 828 186 L 866 186" fill="none" stroke="var(--appearance)" stroke-width="1.2" marker-end="url(#ar-a)"/>
+        <text class="s-sub" x="872" y="183" fill="var(--appearance)">golden_scores[roi]</text>
+        <text class="s-sub" x="872" y="197" fill="var(--ink-faint)">per appearance ROI</text>
+        <text class="s-sub" x="872" y="211" fill="var(--ink-faint)">a threshold must sit above it</text>
+
+        <!-- position stats -->
+        <path class="lane-a" d="M 1013 120 L 1013 240 L 975 240" fill="none" stroke="var(--appearance)" stroke-width="1.2" marker-end="url(#ar-a)"/>
+        <text class="s-sub" x="969" y="230" text-anchor="end" fill="var(--appearance)">position stats</text>
+        <text class="s-sub" x="969" y="244" text-anchor="end" fill="var(--ink-faint)">per-cell mean / σ of residual</text>
+        <text class="s-sub" x="969" y="258" text-anchor="end" fill="var(--ink-faint)">a FIXED transform, not per-image</text>
+
+        <!-- ============ GEOMETRY LANE ============ -->
+        <line class="lane-g" x1="596" y1="322" x2="1096" y2="322" stroke="var(--geometry)" stroke-width="1" opacity=".45"/>
+        <text class="s-branch" x="598" y="314" fill="var(--geometry)">GEOMETRY LANE</text>
+
+        <rect x="598" y="330" width="152" height="54" rx="3" fill="var(--geo-wash)" stroke="var(--geometry)" stroke-width="1.3"/>
+        <text class="s-label" x="674" y="352" text-anchor="middle" fill="var(--geometry)">measure silhouette</text>
+        <text class="s-sub" x="674" y="369" text-anchor="middle" fill="var(--ink-soft)">per geometry ROI box</text>
+
+        <line class="lane-g" x1="750" y1="357" x2="782" y2="357" stroke="var(--geometry)" stroke-width="1.5" marker-end="url(#ar-g)"/>
+
+        <rect x="782" y="330" width="150" height="54" rx="3" fill="var(--geo-wash)" stroke="var(--geometry)" stroke-width="1.3"/>
+        <text class="s-label" x="857" y="352" text-anchor="middle" fill="var(--geometry)">fit_nominal</text>
+        <text class="s-sub" x="857" y="369" text-anchor="middle" fill="var(--ink-soft)">median + MAD×1.4826</text>
+
+        <line class="lane-g" x1="932" y1="357" x2="964" y2="357" stroke="var(--geometry)" stroke-width="1.5" marker-end="url(#ar-g)"/>
+
+        <rect x="964" y="330" width="132" height="54" rx="3" fill="none" stroke="var(--geometry)" stroke-width="1.3"/>
+        <text class="s-label" x="1030" y="352" text-anchor="middle" fill="var(--geometry)">geometry_</text>
+        <text class="s-label" x="1030" y="368" text-anchor="middle" fill="var(--geometry)">nominals</text>
+
+        <text class="s-sub" x="674" y="400" text-anchor="middle" fill="var(--ink-faint)">area · fill_ratio · corner_angle · solidity</text>
+        <text class="s-sub" x="857" y="400" text-anchor="middle" fill="var(--ink-faint)">never touches a patch vector</text>
+
+        <!-- ============ model.npz ============ -->
+        <rect x="596" y="424" width="500" height="34" rx="3" fill="var(--sunken)" stroke="var(--rule-firm)" stroke-width="1.2"/>
+        <text class="s-label" x="846" y="446" text-anchor="middle" fill="currentColor">model.npz</text>
+        <path class="lane-g" d="M 1030 384 L 1030 420" fill="none" stroke="var(--geometry)" stroke-width="1.3" marker-end="url(#ar-g)"/>
+        <path class="lane-a" d="M 1013 262 L 1013 300 L 660 300 L 660 420" fill="none" stroke="var(--appearance)" stroke-width="1.3" marker-end="url(#ar-a)"/>
+      </svg>
+    </div>
+    <figcaption>
+      <b>The ROI list is an input, not an output.</b> Registration cannot fit geometry nominals without it —
+      no ROI at registration means every geometry check later hits the <code>"no nominal recorded"</code> branch
+      and auto-passes. In practice this is a two-pass workflow: register once with no ROIs to get a canvas and
+      reference image, annotate against that image, then <em>re-register</em> so the nominals land in the model.
+    </figcaption>
+  </figure>
+</section>
+
+<section>
+  <div class="sec-head">
+    <h2>Inference</h2>
+    <span class="cmd">python -m inspector.inspect --sku &lt;SKU&gt; --image &lt;img&gt;</span>
+  </div>
+  <p class="lede">
+    The same spine, then the ROI loop. DINOv2 runs <em>once</em> on the whole canvas — the ROIs slice a map that
+    already exists, which is why they are a read-out layer rather than a processing stage.
+  </p>
+
+  <figure>
+    <div class="scroller">
+      <svg viewBox="0 0 1120 430" role="img"
+           aria-label="Inference flow: preprocess, then a RETAKE gate that returns immediately on an unusable photo. DINOv2 runs once on the whole canvas producing one score map. The ROI loop splits by fixed ROI type: appearance ROIs slice the score map and test score under threshold, while geometry ROIs measure the silhouette against stored nominals and test tolerance violations. Both rejoin at a plain AND producing PASS or FAIL.">
+        <defs>
+          <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 1 L 9 5 L 0 9 z" fill="currentColor"/>
+          </marker>
+          <marker id="ar2-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 1 L 9 5 L 0 9 z" fill="currentColor"/>
+          </marker>
+          <marker id="ar2-g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 1 L 9 5 L 0 9 z" fill="currentColor"/>
+          </marker>
+          <marker id="ar2-r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 1 L 9 5 L 0 9 z" fill="currentColor"/>
+          </marker>
+        </defs>
+
+        <!-- photo -->
+        <text class="s-sub" x="24" y="196" fill="var(--ink-soft)">test photo</text>
+        <line x1="86" y1="192" x2="122" y2="192" stroke="currentColor" stroke-width="1.5" marker-end="url(#ar2)"/>
+
+        <!-- preprocess -->
+        <rect x="122" y="160" width="150" height="64" rx="3" fill="var(--sunken)" stroke="var(--rule-firm)" stroke-width="1"/>
+        <text class="s-step" x="132" y="152" fill="var(--ink-faint)">I1</text>
+        <text class="s-label" x="197" y="186" text-anchor="middle" fill="currentColor">preprocess</text>
+        <text class="s-sub" x="197" y="203" text-anchor="middle" fill="var(--ink-soft)">segment→ink→align</text>
+        <text class="s-sub" x="197" y="216" text-anchor="middle" fill="var(--ink-faint)">identical path</text>
+
+        <!-- retake gate -->
+        <line x1="272" y1="192" x2="300" y2="192" stroke="currentColor" stroke-width="1.5" marker-end="url(#ar2)"/>
+        <path class="lane-r" d="M 356 158 L 400 192 L 356 226 L 312 192 Z"
+              fill="var(--ret-wash)" stroke="var(--retake)" stroke-width="1.4"/>
+        <text class="s-sub" x="356" y="189" text-anchor="middle" fill="var(--retake)">photo</text>
+        <text class="s-sub" x="356" y="202" text-anchor="middle" fill="var(--retake)">usable?</text>
+
+        <path class="lane-r" d="M 356 158 L 356 112" fill="none" stroke="var(--retake)" stroke-width="1.6" marker-end="url(#ar2-r)"/>
+        <text class="s-edge" x="364" y="136" fill="var(--retake)">no</text>
+        <rect x="286" y="72" width="142" height="38" rx="3" fill="var(--ret-wash)" stroke="var(--retake)" stroke-width="1.4"/>
+        <text class="s-label" x="357" y="96" text-anchor="middle" fill="var(--retake)">RETAKE</text>
+        <text class="s-sub" x="357" y="60" text-anchor="middle" fill="var(--ink-soft)">returns immediately —</text>
+        <text class="s-sub" x="357" y="46" text-anchor="middle" fill="var(--ink-soft)">no features, no ROI, no score</text>
+
+        <line x1="400" y1="192" x2="436" y2="192" stroke="currentColor" stroke-width="1.5" marker-end="url(#ar2)"/>
+        <text class="s-edge" x="418" y="184" text-anchor="middle" fill="var(--ink-faint)">yes</text>
+
+        <!-- canvas node -->
+        <rect x="436" y="164" width="126" height="56" rx="3" fill="var(--sunken)" stroke="var(--rule-firm)" stroke-width="1"/>
+        <text class="s-label" x="499" y="188" text-anchor="middle" fill="currentColor">aligned canvas</text>
+        <text class="s-sub" x="499" y="205" text-anchor="middle" fill="var(--ink-soft)">+ valid mask</text>
+
+        <circle cx="600" cy="192" r="4" fill="currentColor"/>
+        <line x1="562" y1="192" x2="596" y2="192" stroke="currentColor" stroke-width="1.5"/>
+
+        <!-- appearance branch up -->
+        <path class="lane-a" d="M 600 192 L 600 106 L 640 106" fill="none" stroke="var(--appearance)" stroke-width="1.6" marker-end="url(#ar2-a)"/>
+        <text class="s-edge" x="606" y="140" fill="var(--appearance)">aligned_image</text>
+
+        <!-- geometry branch down -->
+        <path class="lane-g" d="M 600 192 L 600 300 L 640 300" fill="none" stroke="var(--geometry)" stroke-width="1.6" marker-end="url(#ar2-g)"/>
+        <text class="s-edge" x="606" y="256" fill="var(--geometry)">aligned_part_mask</text>
+
+        <!-- ---- appearance lane ---- -->
+        <text class="s-branch" x="642" y="34" fill="var(--appearance)">type == "appearance"</text>
+        <line class="lane-a" x1="640" y1="44" x2="1100" y2="44" stroke="var(--appearance)" stroke-width="1" opacity=".45"/>
+
+        <rect x="642" y="80" width="118" height="52" rx="3" fill="var(--app-wash)" stroke="var(--appearance)" stroke-width="1.3"/>
+        <text class="s-label" x="701" y="101" text-anchor="middle" fill="var(--appearance)">DINOv2 ×1</text>
+        <text class="s-sub" x="701" y="118" text-anchor="middle" fill="var(--ink-soft)">whole canvas</text>
+
+        <line class="lane-a" x1="760" y1="106" x2="788" y2="106" stroke="var(--appearance)" stroke-width="1.5" marker-end="url(#ar2-a)"/>
+
+        <rect x="788" y="80" width="126" height="52" rx="3" fill="var(--app-wash)" stroke="var(--appearance)" stroke-width="1.3"/>
+        <text class="s-label" x="851" y="101" text-anchor="middle" fill="var(--appearance)">one score map</text>
+        <text class="s-sub" x="851" y="118" text-anchor="middle" fill="var(--ink-soft)">max(z_res, z_maha)</text>
+
+        <line class="lane-a" x1="914" y1="106" x2="942" y2="106" stroke="var(--appearance)" stroke-width="1.5" marker-end="url(#ar2-a)"/>
+
+        <rect x="942" y="80" width="158" height="52" rx="3" fill="none" stroke="var(--appearance)" stroke-width="1.6"/>
+        <text class="s-label" x="1021" y="101" text-anchor="middle" fill="var(--appearance)">slice ROI · aggregate</text>
+        <text class="s-sub" x="1021" y="118" text-anchor="middle" fill="var(--appearance)">score ≤ threshold</text>
+        <text class="s-sub" x="1021" y="150" text-anchor="middle" fill="var(--ink-faint)">the ONLY branch using a threshold</text>
+
+        <!-- ---- geometry lane ---- -->
+        <line class="lane-g" x1="640" y1="272" x2="1100" y2="272" stroke="var(--geometry)" stroke-width="1" opacity=".45"/>
+        <text class="s-branch" x="642" y="264" fill="var(--geometry)">type == "geometry"</text>
+
+        <rect x="642" y="280" width="132" height="52" rx="3" fill="var(--geo-wash)" stroke="var(--geometry)" stroke-width="1.3"/>
+        <text class="s-label" x="708" y="301" text-anchor="middle" fill="var(--geometry)">measure ROI</text>
+        <text class="s-sub" x="708" y="318" text-anchor="middle" fill="var(--ink-soft)">silhouette only</text>
+
+        <line class="lane-g" x1="774" y1="306" x2="802" y2="306" stroke="var(--geometry)" stroke-width="1.5" marker-end="url(#ar2-g)"/>
+
+        <rect x="802" y="280" width="126" height="52" rx="3" fill="var(--geo-wash)" stroke="var(--geometry)" stroke-width="1.3"/>
+        <text class="s-label" x="865" y="301" text-anchor="middle" fill="var(--geometry)">vs nominal</text>
+        <text class="s-sub" x="865" y="318" text-anchor="middle" fill="var(--ink-soft)">from model.npz</text>
+
+        <line class="lane-g" x1="928" y1="306" x2="956" y2="306" stroke="var(--geometry)" stroke-width="1.5" marker-end="url(#ar2-g)"/>
+
+        <rect x="956" y="280" width="144" height="52" rx="3" fill="none" stroke="var(--geometry)" stroke-width="1.6"/>
+        <text class="s-label" x="1028" y="301" text-anchor="middle" fill="var(--geometry)">tolerances</text>
+        <text class="s-sub" x="1028" y="318" text-anchor="middle" fill="var(--geometry)">no violations</text>
+        <text class="s-sub" x="1028" y="350" text-anchor="middle" fill="var(--ink-faint)">no score/threshold test at all</text>
+
+        <!-- rejoin -->
+        <path class="lane-a" d="M 1021 132 L 1021 190 L 700 190 L 700 372" fill="none" stroke="var(--appearance)" stroke-width="1.3"/>
+        <path class="lane-g" d="M 1028 332 L 1028 372" fill="none" stroke="var(--geometry)" stroke-width="1.3"/>
+        <line x1="700" y1="372" x2="1028" y2="372" stroke="currentColor" stroke-width="1.3"/>
+        <path d="M 864 372 L 864 388" fill="none" stroke="currentColor" stroke-width="1.5" marker-end="url(#ar2)"/>
+
+        <rect x="742" y="390" width="244" height="34" rx="3" fill="var(--sunken)" stroke="currentColor" stroke-width="1.4"/>
+        <text class="s-label" x="864" y="412" text-anchor="middle" fill="currentColor">any ROI fails → FAIL · else PASS</text>
+        <text class="s-sub" x="1000" y="366" fill="var(--ink-faint)">a plain AND</text>
+      </svg>
+    </div>
+    <figcaption>
+      <b>Each ROI has one fixed type, set at annotation time</b> — nothing is chosen per inference. But the loop runs
+      over <em>every</em> ROI, so when a SKU defines both kinds, both run every time. Two cases resolve to
+      <em>pass</em>, not fail: no valid patches in the box, and no nominal recorded. Absence of evidence about a
+      check must not scrap a part.
+    </figcaption>
+  </figure>
+
+  <div class="callout">
+    <span class="tag">WHY RETAKE IS NOT FAIL</span>
+    <p>
+      An unusable photo is not a defective part. Reporting a clipped or unsegmentable frame as <code>FAIL</code>
+      would send the operator to scrap a good part instead of retaking the picture — so it gets its own verdict,
+      decided before any scoring happens.
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head">
+    <h2>Where the branches differ</h2>
+  </div>
+  <p class="lede">
+    They fail on opposite things. That is the whole reason both exist.
+  </p>
+
+  <div class="tbl-scroll">
+    <table>
+      <caption>Appearance vs geometry, per ROI</caption>
+      <thead>
+        <tr>
+          <th scope="col"><span class="sr-only">Aspect</span></th>
+          <th scope="col" class="col-app">Appearance</th>
+          <th scope="col" class="col-geo">Geometry</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th scope="row">Reads</th>
+          <td class="app">Patch feature vectors → score map</td>
+          <td class="geo">Aligned silhouette mask</td>
+        </tr>
+        <tr>
+          <th scope="row">Compares to</th>
+          <td class="app">Subspace <code>μ</code>, <code>C</code> + position stats</td>
+          <td class="geo"><code>geometry_nominals</code> — median + MAD</td>
+        </tr>
+        <tr>
+          <th scope="row">Decision</th>
+          <td class="app"><code>score ≤ threshold</code></td>
+          <td class="geo">No tolerance violations</td>
+        </tr>
+        <tr>
+          <th scope="row">Score means</th>
+          <td class="app">max(z<sub>resid</sub>, z<sub>maha</sub>) over valid patches</td>
+          <td class="geo">Worst tolerance usage; <code>1.0</code> = at the limit</td>
+        </tr>
+        <tr>
+          <th scope="row">Catches</th>
+          <td class="app">Scratches, stains, burrs, wrong finish</td>
+          <td class="geo">Missing or bent tab, chamfer vs square corner</td>
+        </tr>
+        <tr>
+          <th scope="row">Blind to</th>
+          <td class="app">Logical anomalies — absent metal reads as ordinary background texture</td>
+          <td class="geo">Anything that doesn't move the outline, like a scratch across the tab</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="lede" style="margin-top:32px">
+    Which is why <code>sku.json</code> for SKU 8983864641 pairs them over identical boxes:
+  </p>
+
+  <div class="pair">
+    <div>
+      <p class="roi a">tab_top_right</p>
+      <p class="box">appearance · box [930, 80, 280, 230]</p>
+      <p class="what">Sheet check 1 — the part must have the tab at top right. Catches a damaged or wrongly-finished tab.</p>
+    </div>
+    <div>
+      <p class="roi g">tab_top_right_geom</p>
+      <p class="box">geometry · box [930, 80, 280, 230]</p>
+      <p class="what">Same box, silhouette instead. A bent-up or missing tab changes the filled area — invisible to appearance.</p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  Sources: inspector/pipeline.py · register.py · inspect.py · geometry.py · subspace.py · features.py<br>
+  Defaults shown are from inspector/config.py — backbone vitl14, input_size 672, τ 0.97, patch_coverage 0.9.
+</footer>
+
+</div>
+
+</body>
+</html>

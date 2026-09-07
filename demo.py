@@ -476,6 +476,29 @@ def load_examples(sku, which):
             and not p.name.upper().startswith("IS_")]
 
 
+def inspection_sheet(sku: str):
+    """The paper inspection sheet for a SKU, if one was photographed.
+
+    Convention: `normal_images/<sku>/IS_*.jpg`. Everywhere else these files are
+    deliberately EXCLUDED -- a sheet is a photo of a document, and letting one
+    into the golden set would put a blue background and printed Thai text
+    inside the model's idea of a normal part.
+
+    Here it is the one place it belongs: drawing ROI boxes means translating
+    the sheet's checks into coordinates, and doing that without the sheet in
+    front of you is how boxes end up on the wrong feature.
+    """
+    folder = GOLDEN_DIR / sku
+    if not folder.exists():
+        return None
+    for p in sorted(folder.iterdir()):
+        if p.name.upper().startswith("IS_") and p.suffix.lower() in {
+                ".jpg", ".jpeg", ".png", ".bmp"}:
+            img = load_image(p)
+            return _to_rgb(img) if img is not None else None
+    return None
+
+
 def available_skus() -> list[str]:
     if not GOLDEN_DIR.exists():
         return []
@@ -540,6 +563,18 @@ def build_ui():
                     fit_stats = gr.Textbox(label="fit statistics", lines=10)
 
                 with gr.Tab("2. ROI selection"):
+                    gr.Markdown(
+                        "Draw one box per check on the **inspection sheet**. "
+                        "The sheet is the source of truth for what this "
+                        "station may reject on — anything not on it is out of "
+                        "scope."
+                    )
+                    if skus:
+                        with gr.Row():
+                            sheet_sku = gr.Dropdown(
+                                skus, value=skus[0], label="SKU", scale=2)
+                            sheet_btn = gr.Button("show inspection sheet",
+                                                  scale=1)
                     roi_mode = gr.Radio([ROI_MODE, WHOLE_PART_MODE],
                                         value=WHOLE_PART_MODE, label="scoring scope")
                     roi_text = gr.Textbox(
@@ -548,7 +583,13 @@ def build_ui():
                         placeholder="tab_top_right, appearance, 930, 80, 280, 230",
                     )
                     preview_btn = gr.Button("Preview ROIs on reference")
-                    roi_preview = gr.Image(label="aligned reference", height=420)
+                    with gr.Row():
+                        sheet_img = gr.Image(
+                            label="inspection sheet (what to check)",
+                            height=420)
+                        roi_preview = gr.Image(
+                            label="aligned reference + your boxes (where)",
+                            height=420)
                     roi_status = gr.Textbox(label="", lines=2)
 
                 with gr.Tab("3. Test image"):
@@ -616,6 +657,11 @@ def build_ui():
                               sku_pick, ref_files)
             load_test.click(lambda s: load_examples(s, "test"),
                             test_sku, test_gallery)
+            sheet_btn.click(inspection_sheet, sheet_sku, sheet_img)
+            # Loading a sample SKU's golden set also pulls up its sheet, so
+            # the two are side by side without a second click.
+            load_golden.click(inspection_sheet, sku_pick, sheet_img)
+            sku_pick.change(inspection_sheet, sku_pick, sheet_img)
 
         fit_btn.click(
             do_fit,

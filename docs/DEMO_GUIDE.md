@@ -90,7 +90,20 @@ Warnings you may see, and what they mean:
 
 ### 2. ROI selection
 
-Where to look on the part. Two modes:
+Where to look on the part — and the tab now shows the **inspection sheet**
+beside the aligned reference, because drawing boxes means translating the
+sheet's checks into coordinates.
+
+Press **show inspection sheet** (or load a sample SKU's golden set, which
+pulls it up automatically). It reads `normal_images/<sku>/IS_*.jpg`. Everywhere
+else in the pipeline these files are deliberately excluded — a sheet is a photo
+of a document, and letting one into the golden set would put a blue background
+and printed Thai inside the model's idea of a normal part.
+
+The two panels answer different halves of the same question: the sheet says
+**what** to check, your boxes say **where**.
+
+Two modes:
 
 - **whole part** — scores everything. Useful as a baseline, worse in practice.
 - **ROI boxes** — scores only inside the boxes you define. This is what makes

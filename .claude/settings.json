@@ -50,7 +50,9 @@
       "Read(//c/Users/user/.cache/torch/hub/checkpoints/**)",
       "Bash(cd \"c:/Users/user/Documents/VScode/defect-detection\" && sed -n '/def build_ui/,/^        ctrl =/p' demo.py | grep -nE \"gr\\\\.\\(Tab|Button|Textbox|Radio|File|Image|Slider|Dropdown|Checkbox|Gallery|Markdown\\)\" | head -40)",
       "Bash(timeout 300 python -c ' *)",
-      "Bash(python -c \"print\\('200 x 2.2 MB = %.0f MB' % \\(200*2.2\\)\\)\")"
+      "Bash(python -c \"print\\('200 x 2.2 MB = %.0f MB' % \\(200*2.2\\)\\)\")",
+      "Bash(cd \"c:/Users/user/Documents/VScode/defect-detection\" && sed -n '/^def load_examples/,/^def available_skus/p' demo.py)",
+      "Bash(start \"\" \"docs/pipeline_flow.html\")"
     ],
     "additionalDirectories": [
       "c:\\Users\\user\\Documents\\VScode\\defect-detection"
