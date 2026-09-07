@@ -57,10 +57,39 @@
       "Bash(PYTHONIOENCODING=utf-8 python -)",
       "Bash(timeout 300 python -c \"import demo; demo.build_ui\\(\\); print\\('UI builds OK'\\)\")",
       "Bash(PYTHONIOENCODING=utf-8 python _chk.py)",
-      "Bash(sed -i 's|<svg viewBox=\"0 0 \\\\\\\\d+ 560\"|<svg viewBox=\"0 0 \\\\\\\\d+ 600\"|; s|VW,VH=1180,560|VW,VH=1180,600|; s|REGISTRATION CLEAN|INFERENCE CLEAN|' _chk.py)"
+      "Bash(sed -i 's|<svg viewBox=\"0 0 \\\\\\\\d+ 560\"|<svg viewBox=\"0 0 \\\\\\\\d+ 600\"|; s|VW,VH=1180,560|VW,VH=1180,600|; s|REGISTRATION CLEAN|INFERENCE CLEAN|' _chk.py)",
+      "Bash(cd \"C:/Users/user/Documents/VScode/defect-detection\" && rm -f _sweep.py _sweep.json && echo done)",
+      "Bash(cd \"C:/Users/user/Documents/VScode/defect-detection\" && rm -f _timing.py && sed -n '1,60p' demo.py)",
+      "Bash(PYTHONIOENCODING=utf-8 python -m inspector.autosize --sku 8983980631)",
+      "Bash(PYTHONIOENCODING=utf-8 python -c ' *)",
+      "Bash(PYTHONIOENCODING=utf-8 python -m inspector.autosize --help)",
+      "Bash(cp demo.py demo.py.bak)",
+      "Bash(PYTHONIOENCODING=utf-8 python -c \"import ast;ast.parse\\(open\\('demo.py',encoding='utf-8'\\).read\\(\\)\\);print\\('syntax OK'\\)\")",
+      "Bash(cp demo.py.bak demo.py)",
+      "Bash(PYTHONIOENCODING=utf-8 python -c \"import ast;ast.parse\\(open\\('demo.py',encoding='utf-8'\\).read\\(\\)\\);print\\('restored, syntax OK'\\)\")",
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}\\\\n\" http://127.0.0.1:7860)",
+      "Bash(cd \"C:/Users/user/Documents/VScode/defect-detection\" && sed -n '/^def do_auto_input_size/,/^    banner/p' demo.py)",
+      "Skill(claude-api)",
+      "Skill(claude-api:*)",
+      "Bash(PYTHONIOENCODING=utf-8 timeout 60 python demo.py)",
+      "Bash(PYTHONIOENCODING=utf-8 timeout 70 python demo.py)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('sku threshold:', d['threshold']\\); [print\\(' ', r['id'], '->', r.get\\('threshold','\\(uses sku default\\)'\\)\\) for r in d['rois']]\")",
+      "Bash(PYTHONIOENCODING=utf-8 timeout 1500 python -c ' *)",
+      "Bash(awk 'NR>=646 && /^def /{print NR\": \"$0}' demo.py)",
+      "Bash(PYTHONIOENCODING=utf-8 timeout 1200 python -m inspector.register --sku 8983864641 --segmenter birefnet)",
+      "Bash(PYTHONIOENCODING=utf-8 timeout 900 python -m inspector.inspect --sku 8983864641)",
+      "Bash(PYTHONIOENCODING=utf-8 python -c \"import ast;[ast.parse\\(open\\(f,encoding='utf-8'\\).read\\(\\)\\) for f in \\('demo.py','inspector/roi.py','inspector/inspect.py'\\)];print\\('syntax OK'\\)\")",
+      "Bash(PYTHONIOENCODING=utf-8 timeout 900 python -c ' *)",
+      "Bash(grep -n \"delete the \\\\`_geom\\\\` row\" -B2 -A3 demo.py)",
+      "Bash(awk 'NR>=540 && /^def /{print NR\": \"$0}' demo.py)",
+      "Bash(awk 'NR>=1418 && /^\"\"\"$/{print NR\": end of DRAG_JS\"; exit}' demo.py)",
+      "Bash(git commit *)",
+      "Bash(git push *)"
     ],
     "additionalDirectories": [
-      "c:\\Users\\user\\Documents\\VScode\\defect-detection"
+      "c:\\Users\\user\\Documents\\VScode\\defect-detection",
+      "C:\\Users\\user\\Documents\\VScode\\defect-detection"
     ]
   }
 }
