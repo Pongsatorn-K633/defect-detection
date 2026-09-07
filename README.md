@@ -244,6 +244,121 @@ silent about it.
 
 ---
 
+## Common questions
+
+### Is "Fit subspace" the whole registration? What comes out of it?
+
+**Yes.** The demo's **Fit subspace** button calls the same `register_sku()`
+that `python -m inspector.register` runs. Same code, same result.
+
+**In:** photos of good parts. **Out:** `data/models/<sku>/model.npz`, 2.2 MB.
+
+| Item | Shape | What it is |
+|---|---|---|
+| `mu` | (1024,) | mean patch vector — the "average normal patch" |
+| `C` | (1024, 180) | **the subspace** — the directions good parts vary along |
+| `eigenvalues` | (180,) | how much variation along each direction |
+| `ref_image`, `ref_mask` | canvas | the consensus reference every part is aligned to |
+| `pos_*_mean`, `pos_*_std` | (38, 48) | per-position baselines — edges and holes always score high, this subtracts that |
+| `geometry_nominals_json` | — | nominal area, angles and fill ratio per geometry ROI |
+
+`mu` and `C` **are** the model, and together they are under 0.75 MB. Most of
+the file is the reference image kept for alignment and display. That is the
+"no training" claim made concrete: a mean vector and an eigenbasis, no weights,
+no gradients.
+
+### Are both appearance and geometry checked at inference?
+
+**Yes, every time.** [`inspect.py`](inspector/inspect.py) loops over every ROI
+and branches on its type — geometry ROIs measure the aligned silhouette against
+the nominal, appearance ROIs score the DINOv2 residual inside the box. **The
+part fails if any ROI fails**, whichever kind it is.
+
+You can see both fire in the CLI output:
+
+```
+image_2.jpg  FAIL  18.76  corner_top_left=18.76, corner_top_left_geom=1.81, tab_top_right=18.40
+```
+
+A square corner is wrong both as texture and as silhouette, so both checks on
+that region caught it.
+
+One thing to know: **the two score types are not on the same scale.**
+Appearance scores are z-like and compared against the SKU threshold (12.0 here).
+Geometry scores are tolerance ratios where **1.0 means exactly at the limit**,
+so `1.81` reads as 81% past tolerance. Geometry ROIs therefore ignore the SKU
+threshold and always compare against 1.0.
+
+### Does this need a vector database?
+
+**No** — and that is worth understanding, because it is the opposite of how
+most anomaly detection works.
+
+Methods like PatchCore *store* thousands of normal patch vectors and search for
+nearest neighbours at inference. That is what needs FAISS or Milvus.
+
+SubspaceAD stores **no vectors at all**. Everything the golden patches taught
+it is compressed into a mean vector and ~180 directions. At inference it is two
+matrix multiplies:
+
+```
+residual = x − (mu + C Cᵀ (x − mu))
+```
+
+No search, no index, nothing to scale. A SKU's model is a **2.2 MB file**, and
+most of that is the reference image kept for alignment and display — `mu` and
+`C` together are under 0.75 MB. Two hundred SKUs is a folder of about 400 MB,
+not a database.
+
+### Are BiRefNet and DINOv2 used for registration, inference, or both?
+
+**Both, and identically in each.**
+
+| Stage | Segmentation (BiRefNet) | Features (DINOv2) |
+|---|---|---|
+| Registration | [`pipeline.py`](inspector/pipeline.py) | [`register.py`](inspector/register.py) |
+| Inference | [`pipeline.py`](inspector/pipeline.py) — *the same call* | [`inspect.py`](inspector/inspect.py) |
+
+Segmentation sits inside the shared preprocessing path, so both stages reach it
+through one function. That is design rule #1 enforced structurally rather than
+by discipline.
+
+Both models are **frozen in both stages** — never fine-tuned, never updated.
+They are fixed measuring instruments: BiRefNet answers "which pixels are the
+part", DINOv2 answers "describe this patch". The only thing that differs is
+PCA, fitted at registration and applied at inference.
+
+### Which segmenter and backbone should I use?
+
+**Segmenter: `birefnet`.** Measured on this data:
+
+| | Mean IoU | Drift | Experiment 1 |
+|---|---|---|---|
+| birefnet | 0.967 | 1.75 px | **PASS** |
+| classical | 0.935 | 4.66 px | FAIL |
+
+`classical` fails the alignment criterion, and alignment is load-bearing. Keep
+it as a fallback for machines without a GPU or the 900 MB download, not as a
+default.
+
+**Backbone: `vitl14`** — the default, and the right choice.
+
+| | Peak VRAM | Speed | Verdict |
+|---|---|---|---|
+| vits14 / vitb14 | lower | faster | weaker features; only if GPU-constrained |
+| **vitl14** | 1.79 GB | 291 ms | **use this** |
+| vitg14 | higher | ~3× slower | 4.2 GB download for marginal gain — avoid |
+
+Measured on an RTX 4070 Laptop (8.6 GB): BiRefNet peaks at 1.71 GB and ViT-L at
+1.79 GB, so roughly a quarter of the card. There is no memory pressure.
+
+**Resolution matters more than backbone.** Raising `input_size` from 672 to
+1120 on SKU 8983980631 turned a coin-flip into a 46× margin; switching to
+ViT-G would not have. If a check is marginal, raise the resolution first — see
+the per-SKU `input_size` override in `sku.json`.
+
+---
+
 ## Setup
 
 ```bash
