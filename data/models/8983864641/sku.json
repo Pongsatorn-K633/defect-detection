@@ -5,7 +5,7 @@
     988
   ],
   "ref_area_px": 30407.0,
-  "threshold": 12.0,
+  "threshold": 18.0,
   "rois": [
     {
       "id": "corner_top_left",
@@ -16,7 +16,7 @@
         260,
         220
       ],
-      "threshold": 12.0,
+      "threshold": 18.0,
       "note": "Inspection sheet check 2: top-left corner must be chamfered. IS sheet: มุมด้านบนซ้ายตัดเฉียง"
     },
     {
@@ -39,22 +39,22 @@
       "id": "tab_top_right",
       "type": "appearance",
       "box": [
-        930,
-        80,
-        280,
-        230
+        880,
+        72,
+        180,
+        120
       ],
-      "threshold": 12.0,
+      "threshold": 18.0,
       "note": "Inspection sheet check 1: the part must have the tab at top right. IS sheet: ชิ้นงานต้องมีปีกอยู่ด้านขวาบน"
     },
     {
       "id": "tab_top_right_geom",
       "type": "geometry",
       "box": [
-        930,
-        80,
-        280,
-        230
+        880,
+        72,
+        180,
+        120
       ],
       "tolerance": {
         "area_pct": 10.0,
@@ -63,5 +63,12 @@
       },
       "note": "Silhouette check for the same tab: a bent-up or missing tab changes the filled area of this box."
     }
-  ]
+  ],
+  "input_size": 896,
+  "threshold_grid": [
+    51,
+    64
+  ],
+  "threshold_worst_ok": 14.35,
+  "threshold_best_ng": 21.72
 }

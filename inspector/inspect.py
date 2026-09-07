@@ -112,6 +112,17 @@ def inspect_image(
     canvas = reg["canvas_size"]
     default_thr = sku_cfg.threshold if sku_cfg else cfg.threshold
 
+    # A threshold is a measurement against one fitted model, not a preference:
+    # it is the gap between the worst passing part and the best failing one,
+    # and those scores move when the model does. On SKU 8983864641 the usable
+    # window shifted from 10.95-13.14 at input_size 672 to 18.93-21.72 at 896,
+    # so a threshold carried across a re-fit silently failed good parts.
+    if sku_cfg is not None and sku_cfg.threshold_stale_for((grid_h, grid_w)):
+        log.warning(
+            "threshold %g was measured on patch grid %s but this model is %s; "
+            "re-measure it against the known-bad parts or good parts may fail",
+            sku_cfg.threshold, tuple(sku_cfg.threshold_grid), (grid_h, grid_w))
+
     for roi in (sku_cfg.effective_rois() if sku_cfg else []):
         thr = roi.threshold if roi.threshold is not None else default_thr
 

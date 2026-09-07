@@ -18,6 +18,11 @@ OUTPUT_DIR = REPO_ROOT / "outputs"
 # Source image folders as laid out in this repo.
 GOLDEN_DIR = REPO_ROOT / "normal_images"
 TEST_DIR = REPO_ROOT / "test_images"
+# Known-bad parts, used only to tune input_size and the verdict threshold.
+# Separate from test_images/ on purpose: these are registration inputs with a
+# known label, not parts being judged, and mixing the two made it unclear
+# which folder a photo belonged in.
+NG_DIR = REPO_ROOT / "ng_images"
 
 Backbone = Literal["vits14", "vitb14", "vitl14", "vitg14"]
 Segmenter = Literal["birefnet", "classical", "auto"]

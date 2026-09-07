@@ -127,7 +127,29 @@ def register_sku(
             continue
         measured = [geom_mod.measure_roi_geometry(r.aligned_part_mask, roi.box)
                     for r in usable]
-        geom_nominals[roi.id] = geom_mod.fit_nominal(measured)
+        nominal = geom_mod.fit_nominal(measured)
+        geom_nominals[roi.id] = nominal
+
+        # A geometry ROI only means something where the silhouette has an edge
+        # to measure. Sitting on solid interior it fills the box on every
+        # golden part, so it can never catch a defect -- an embossed mark or a
+        # scratch does not move the outline -- yet it still fires whenever
+        # segmentation wobbles, failing a good part on a check that was
+        # measuring nothing. Cheap to leave in (~0.03 ms), but the false
+        # rejects are not cheap, so say so here where it can still be removed.
+        # Threshold set from the sample SKUs: a box straddling a real outline
+        # measures 0.40 (tab) or 0.62 (chamfered corner), while a box on flat
+        # interior measures 0.97 (the embossed RH mark). 0.95 sits clear of
+        # both, and the check is advisory -- it never blocks registration.
+        frac = nominal.get("area_frac", float("nan"))
+        if np.isfinite(frac) and (frac > 0.95 or frac < 0.05):
+            where = "solid part" if frac > 0.5 else "background"
+            say(f"WARNING: geometry ROI {roi.id!r} sits on flat {where} "
+                f"(area {100 * frac:.1f}% of its box on every golden part). "
+                f"The silhouette has no edge here, so this check cannot catch "
+                f"a defect -- it can only misfire on segmentation noise. If "
+                f"the check is a surface mark, delete this ROI and keep the "
+                f"appearance one.")
 
     # Golden score distribution: what "normal" looks like on this SKU, which
     # is what any sensible threshold has to be set against.
@@ -207,10 +229,25 @@ def save_registration(reg: dict, sku_cfg: SKUConfig | None = None) -> Path:
 
     np.savez_compressed(model_path(sku), **payload)
 
-    cfg = sku_cfg or SKUConfig(sku=sku, canvas_size=reg["canvas_size"],
-                               ref_area_px=reg["ref_stats"]["area"])
+    # Anything the fit determines is written back; anything the operator chose
+    # is preserved. Reading the config off disk when the caller did not supply
+    # one stops a re-fit from wiping ROIs and the threshold -- work that takes
+    # NG photos to establish and is not recoverable from the model.
+    if sku_cfg is None:
+        try:
+            sku_cfg = SKUConfig.load(sku)
+        except FileNotFoundError:
+            sku_cfg = SKUConfig(sku=sku, canvas_size=reg["canvas_size"],
+                                ref_area_px=reg["ref_stats"]["area"])
+    cfg = sku_cfg
     cfg.canvas_size = reg["canvas_size"]
     cfg.ref_area_px = reg["ref_stats"]["area"]
+    # input_size is a property OF the fit, not a preference alongside it: the
+    # subspace and the position statistics are tied to the patch grid they
+    # were fitted on, and inspection has to use the same one. Recording what
+    # was actually fitted keeps sku.json and model.npz from drifting apart --
+    # a mismatch silently disables position normalisation at inference.
+    cfg.input_size = int(reg["config"].features.input_size)
     cfg.save()
 
     cv2.imwrite(str(d / "reference_aligned.png"), reg["ref_image"])

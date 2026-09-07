@@ -58,6 +58,20 @@ class SKUConfig:
     ref_area_px: float = 0.0
     rois: list[ROI] = field(default_factory=list)
     threshold: float = 6.0
+    # What the threshold was measured against, and on which fit.
+    #
+    # A threshold is not a preference: it is the gap between the worst passing
+    # part and the best failing one, and both of those scores exist only
+    # relative to one fitted model. Re-fit at a different resolution and the
+    # same parts score differently -- on SKU 8983864641 the usable window moved
+    # from 10.95-13.14 at input_size 672 to 18.93-21.72 at 896. A threshold
+    # carried across that change silently fails good parts.
+    #
+    # Recording the grid it was measured on makes the staleness detectable
+    # instead of silent; `threshold_stale_for` does the comparison.
+    threshold_grid: list | None = None      # [h, w] patch grid at measurement
+    threshold_worst_ok: float | None = None
+    threshold_best_ng: float | None = None
     # Per-SKU DINOv2 input resolution, overriding the global default. Some
     # checks are simply under-resolved at 672: if an ROI holds only ~16
     # patches, the verdict rides on the single worst one and a good part can
@@ -75,7 +89,29 @@ class SKUConfig:
         }
         if self.input_size is not None:
             d["input_size"] = self.input_size
+        if self.threshold_grid is not None:
+            d["threshold_grid"] = list(self.threshold_grid)
+        if self.threshold_worst_ok is not None:
+            d["threshold_worst_ok"] = self.threshold_worst_ok
+        if self.threshold_best_ng is not None:
+            d["threshold_best_ng"] = self.threshold_best_ng
         return d
+
+    def threshold_stale_for(self, grid) -> bool:
+        """True if this threshold was measured on a different patch grid.
+
+        Unmeasured thresholds are not reported stale -- there is nothing to be
+        stale against, and `threshold_measured` covers that case separately.
+        """
+        if self.threshold_grid is None:
+            return False
+        return tuple(int(v) for v in self.threshold_grid) != tuple(
+            int(v) for v in grid)
+
+    @property
+    def threshold_measured(self) -> bool:
+        """Was this threshold measured against known-bad parts, or guessed?"""
+        return self.threshold_grid is not None
 
     @classmethod
     def from_dict(cls, d: dict) -> "SKUConfig":
@@ -86,6 +122,9 @@ class SKUConfig:
             rois=[ROI.from_dict(r) for r in d.get("rois", [])],
             threshold=d.get("threshold", 6.0),
             input_size=d.get("input_size"),
+            threshold_grid=d.get("threshold_grid"),
+            threshold_worst_ok=d.get("threshold_worst_ok"),
+            threshold_best_ng=d.get("threshold_best_ng"),
         )
 
     def apply_to(self, cfg):
