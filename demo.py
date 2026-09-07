@@ -105,7 +105,7 @@ def do_fit(files, backbone, input_size, tau, aggregation, position_norm,
     """Fit the subspace on the uploaded reference images."""
     if not files:
         return (state, "Upload at least one reference image first.", None,
-                None, "", gr.update())
+                None, "", gr.update(), [])
 
     paths = [f if isinstance(f, str) else f.name for f in files]
     cfg = build_config(backbone, input_size, tau, aggregation, position_norm,
@@ -121,8 +121,10 @@ def do_fit(files, backbone, input_size, tau, aggregation, position_norm,
                 f"Reusing the cached fit ({len(reg['sources'])} images, "
                 f"r={reg['model']['r']}). Nothing that affects the subspace "
                 f"changed.",
-                _to_rgb(reg["ref_image"]), state.get("stage_sheet"),
-                state.get("stats", ""), gr.update())
+                _roi_canvas(reg, state.get("draft_rois", [])),
+                state.get("stage_sheet"),
+                state.get("stats", ""), gr.update(),
+                _roi_rows(state.get("draft_rois", [])))
 
     msgs = []
 
@@ -141,7 +143,7 @@ def do_fit(files, backbone, input_size, tau, aggregation, position_norm,
     except Exception as exc:  # noqa: BLE001 - surface the real cause in the UI
         log.exception("fit failed")
         return (state, f"Fit failed: {exc}\n\n{traceback.format_exc()[-800:]}",
-                None, None, "", gr.update())
+                None, None, "", gr.update(), [])
 
     canvas = reg["canvas_size"]
     sheet = viz.grid(
@@ -194,6 +196,10 @@ def do_fit(files, backbone, input_size, tau, aggregation, position_norm,
     state.update({"reg": reg, "cfg": cfg, "signature": sig,
                   "canvas": canvas, "stats": stats,
                   "stage_sheet": _to_rgb(sheet)})
+    # Keep whatever the ROI editor already had; a refit should not silently
+    # discard boxes the operator has drawn.
+    state.setdefault("draft_rois", [])
+    state["roi_pending"] = None
 
     status = "\n".join(msgs[-6:] + [""] + warn) if warn else "\n".join(msgs[-6:])
     default_roi = roi_text
@@ -203,8 +209,9 @@ def do_fit(files, backbone, input_size, tau, aggregation, position_norm,
                        f"example, appearance, {cw // 4}, {ch // 4}, "
                        f"{cw // 4}, {ch // 4}\n")
 
-    return (state, status, _to_rgb(reg["ref_image"]), _to_rgb(sheet), stats,
-            gr.update(value=default_roi))
+    draft = state.get("draft_rois", [])
+    return (state, status, _roi_canvas(reg, draft), _to_rgb(sheet), stats,
+            gr.update(value=default_roi), _roi_rows(draft))
 
 
 def do_preview_rois(roi_mode, roi_text, state):
@@ -225,6 +232,139 @@ def do_preview_rois(roi_mode, roi_text, state):
         return _to_rgb(reg["ref_image"]), "No ROIs defined yet."
     img = viz.draw_rois(reg["ref_image"], [r.to_dict() for r in rois])
     return _to_rgb(img), f"{len(rois)} ROI(s) drawn on the aligned reference."
+
+
+def _roi_canvas(reg, rois, pending=None):
+    """Aligned reference with the saved boxes drawn, plus any pending corner."""
+    img = viz.draw_rois(reg["ref_image"], [r.to_dict() for r in rois])
+    if pending is not None:
+        x, y = pending
+        cv2.drawMarker(img, (int(x), int(y)), (255, 255, 255),
+                       cv2.MARKER_CROSS, 34, 3)
+        img = viz.label(img, "click the opposite corner",
+                        (max(int(x) - 90, 4), max(int(y) - 16, 16)),
+                        (255, 255, 255), 0.55)
+    return _to_rgb(img)
+
+
+def _roi_rows(rois):
+    return [[r.id, r.type, *r.box, r.note] for r in rois]
+
+
+def do_roi_click(rid, rtype, note, state, evt: gr.SelectData):
+    """Two clicks define a box: first corner, then the opposite one.
+
+    Click-to-place rather than drag: Gradio's editor returns painted pixels
+    rather than coordinates, so a drag would mean detecting a rectangle from a
+    bitmap. Two clicks give exact numbers with nothing to infer.
+    """
+    reg = state.get("reg")
+    if reg is None:
+        return state, None, [], "Fit the subspace first (Panel 1)."
+
+    x, y = int(evt.index[0]), int(evt.index[1])
+    state = dict(state)
+    rois = list(state.get("draft_rois", []))
+    first = state.get("roi_pending")
+
+    if first is None:
+        state["roi_pending"] = (x, y)
+        return (state, _roi_canvas(reg, rois, (x, y)), _roi_rows(rois),
+                f"Corner 1 at ({x}, {y}). Now click the opposite corner.")
+
+    x0, y0 = first
+    state["roi_pending"] = None
+    bx, by = min(x0, x), min(y0, y)
+    bw, bh = abs(x - x0), abs(y - y0)
+    if bw < 8 or bh < 8:
+        return (state, _roi_canvas(reg, rois), _roi_rows(rois),
+                "That box is too small — start again with two corners further "
+                "apart.")
+
+    name = (rid or "").strip() or f"check_{len(rois) + 1}"
+    if any(r.id == name for r in rois):
+        return (state, _roi_canvas(reg, rois), _roi_rows(rois),
+                f"An ROI called '{name}' already exists — give this one a "
+                f"different name.")
+
+    kind = "geometry" if str(rtype).startswith("geometry") else "appearance"
+    tol = {"area_pct": 10.0, "fill_ratio_pct": 12.0,
+           "corner_angle_deg": 15.0} if kind == "geometry" else {}
+    rois.append(ROI(name, kind, (bx, by, bw, bh), tolerance=tol,
+                    note=(note or "").strip()))
+    state["draft_rois"] = rois
+    return (state, _roi_canvas(reg, rois), _roi_rows(rois),
+            f"Added **{name}** [{kind}] at ({bx}, {by}, {bw}, {bh}). "
+            f"{len(rois)} ROI(s) defined.")
+
+
+def do_roi_undo(state):
+    reg = state.get("reg")
+    if reg is None:
+        return state, None, [], "Fit the subspace first."
+    state = dict(state)
+    rois = list(state.get("draft_rois", []))
+    state["roi_pending"] = None
+    if not rois:
+        return state, _roi_canvas(reg, rois), [], "Nothing to undo."
+    gone = rois.pop()
+    state["draft_rois"] = rois
+    return (state, _roi_canvas(reg, rois), _roi_rows(rois),
+            f"Removed **{gone.id}**. {len(rois)} left.")
+
+
+def do_roi_clear(state):
+    reg = state.get("reg")
+    state = dict(state)
+    state["draft_rois"] = []
+    state["roi_pending"] = None
+    canvas = _roi_canvas(reg, []) if reg else None
+    return state, canvas, [], "Cleared all ROIs."
+
+
+def do_roi_load(sku, state):
+    """Load an existing sku.json so it can be edited rather than retyped."""
+    reg = state.get("reg")
+    try:
+        cfg = SKUConfig.load(sku)
+    except FileNotFoundError:
+        return (state, _roi_canvas(reg, []) if reg else None, [],
+                f"No saved config for {sku} yet — draw boxes and save.")
+    state = dict(state)
+    state["draft_rois"] = list(cfg.rois)
+    state["roi_pending"] = None
+    return (state, _roi_canvas(reg, cfg.rois) if reg else None,
+            _roi_rows(cfg.rois),
+            f"Loaded {len(cfg.rois)} ROI(s) from {sku}, threshold "
+            f"{cfg.threshold}. Edit and save to overwrite.")
+
+
+def do_roi_save(sku, threshold, state):
+    """Write sku.json -- the file the pipeline actually reads."""
+    reg = state.get("reg")
+    if reg is None:
+        return state, "Fit the subspace first — the canvas size comes from it."
+    rois = state.get("draft_rois", [])
+    if not rois:
+        return state, "No ROIs to save."
+
+    try:
+        existing = SKUConfig.load(sku)
+        input_size = existing.input_size
+    except FileNotFoundError:
+        input_size = None
+
+    cfg = SKUConfig(sku=sku, canvas_size=reg["canvas_size"],
+                    ref_area_px=reg["ref_stats"].get("area", 0.0),
+                    rois=rois, threshold=float(threshold),
+                    input_size=input_size)
+    path = cfg.save()
+    return (state,
+            f"Saved **{len(rois)} ROI(s)** to `{path}`.\n\n"
+            f"Geometry ROIs need their nominals measured, so re-run "
+            f"registration before inspecting:\n\n"
+            f"```\npython -m inspector.register --sku {sku} "
+            f"--segmenter birefnet\n```")
 
 
 # -------------------------------------------------------------------- panel 3
@@ -576,21 +716,62 @@ def build_ui():
                             sheet_btn = gr.Button("show inspection sheet",
                                                   scale=1)
                     roi_mode = gr.Radio([ROI_MODE, WHOLE_PART_MODE],
-                                        value=WHOLE_PART_MODE, label="scoring scope")
-                    roi_text = gr.Textbox(
-                        label="ROI table -- one per line: id, type, x, y, w, h",
-                        lines=6,
-                        placeholder="tab_top_right, appearance, 930, 80, 280, 230",
-                    )
-                    preview_btn = gr.Button("Preview ROIs on reference")
+                                        value=WHOLE_PART_MODE,
+                                        label="scoring scope")
+
                     with gr.Row():
                         sheet_img = gr.Image(
-                            label="inspection sheet (what to check)",
-                            height=420)
+                            label="inspection sheet — WHAT to check",
+                            height=430)
                         roi_preview = gr.Image(
-                            label="aligned reference + your boxes (where)",
-                            height=420)
-                    roi_status = gr.Textbox(label="", lines=2)
+                            label="aligned reference — WHERE. "
+                                  "Click two opposite corners to add a box.",
+                            height=430, interactive=False)
+
+                    roi_status = gr.Markdown()
+
+                    with gr.Row():
+                        roi_id = gr.Textbox(label="check name", scale=2,
+                                            placeholder="tab_top_right")
+                        roi_type = gr.Dropdown(
+                            ["appearance — texture, marks, scratches",
+                             "geometry — silhouette shape, missing tabs"],
+                            value="appearance — texture, marks, scratches",
+                            label="check type", scale=3)
+                    roi_note = gr.Textbox(
+                        label="description — quote the inspection sheet",
+                        placeholder="ชิ้นงานต้องมีปีกอยู่ด้านขวาบน  /  "
+                                    "the part must have the tab at top right")
+
+                    with gr.Row():
+                        roi_undo_btn = gr.Button("undo last box")
+                        roi_clear_btn = gr.Button("clear all")
+                        roi_load_btn = gr.Button("load saved sku.json")
+
+                    roi_table = gr.Dataframe(
+                        headers=["id", "type", "x", "y", "w", "h",
+                                 "description"],
+                        label="ROIs defined so far",
+                        interactive=False, wrap=True,
+                    )
+
+                    with gr.Row():
+                        roi_save_sku = gr.Textbox(
+                            label="save as SKU",
+                            value=skus[0] if skus else "",
+                            scale=2)
+                        roi_save_btn = gr.Button("Save sku.json",
+                                                 variant="primary", scale=1)
+                    roi_save_status = gr.Markdown()
+
+                    with gr.Accordion("advanced: edit as text", open=False):
+                        roi_text = gr.Textbox(
+                            label="one per line: id, type, x, y, w, h",
+                            lines=5,
+                            placeholder="tab_top_right, appearance, "
+                                        "930, 80, 280, 230",
+                        )
+                        preview_btn = gr.Button("Preview typed ROIs")
 
                 with gr.Tab("3. Test image"):
                     test_file = gr.File(file_types=["image"],
@@ -666,10 +847,26 @@ def build_ui():
         fit_btn.click(
             do_fit,
             [ref_files] + ctrl + [roi_mode, roi_text, state],
-            [state, fit_status, roi_preview, stages_img, fit_stats, roi_text],
+            [state, fit_status, roi_preview, stages_img, fit_stats, roi_text,
+             roi_table],
         )
         preview_btn.click(do_preview_rois, [roi_mode, roi_text, state],
                           [roi_preview, roi_status])
+
+        # Click-to-place ROI editor. Two clicks on the reference define a box;
+        # the result is written to sku.json, which is what the pipeline reads.
+        roi_preview.select(
+            do_roi_click, [roi_id, roi_type, roi_note, state],
+            [state, roi_preview, roi_table, roi_status],
+        )
+        roi_undo_btn.click(do_roi_undo, state,
+                           [state, roi_preview, roi_table, roi_status])
+        roi_clear_btn.click(do_roi_clear, state,
+                            [state, roi_preview, roi_table, roi_status])
+        roi_load_btn.click(do_roi_load, [roi_save_sku, state],
+                           [state, roi_preview, roi_table, roi_status])
+        roi_save_btn.click(do_roi_save, [roi_save_sku, threshold, state],
+                           [state, roi_save_status])
         inspect_btn.click(
             do_inspect,
             [test_file, roi_mode, roi_text, threshold, state],

@@ -126,11 +126,31 @@ Press **Preview ROIs on reference** to see the boxes drawn on the aligned
 reference image. Do this before inspecting — a box in the wrong place is the
 second most common cause of confusing results.
 
-> **Finding coordinates:** the UI takes typed numbers, not mouse-drag. To drag
-> boxes visually use `python -m inspector.annotate --sku <sku>`, which opens an
-> OpenCV window. Ready-made boxes for both sample SKUs are already in
-> `data/models/<sku>/sku.json`; `python -m inspector.annotate --sku <sku> --list`
-> prints them for copying.
+**Drawing a box, and saving it:**
+
+1. Read the check on the inspection sheet (left panel).
+2. Type a **check name** and a **description** — quote the sheet, Thai is fine.
+3. Pick **appearance** or **geometry**.
+4. **Click two opposite corners** on the aligned reference. The box appears and
+   the table updates.
+5. Repeat for each check, then press **Save sku.json**.
+
+Two clicks rather than a drag: Gradio's editor returns painted pixels, not
+coordinates, so a drag would mean detecting a rectangle from a bitmap. Two
+clicks give exact numbers with nothing to infer.
+
+**undo last box** / **clear all** / **load saved sku.json** do what they say —
+the last one pulls an existing config in for editing rather than retyping it.
+
+After saving, **re-run registration** if any ROI is geometry: nominals are
+measured at fit time, so a new geometry box has none until you do.
+
+```bash
+python -m inspector.register --sku <sku> --segmenter birefnet
+```
+
+`sku.json` is what the pipeline actually reads. The inspection sheet is a
+picture for you; this file is the machine-readable version of it.
 
 ### 3. Test image
 

@@ -52,7 +52,12 @@
       "Bash(timeout 300 python -c ' *)",
       "Bash(python -c \"print\\('200 x 2.2 MB = %.0f MB' % \\(200*2.2\\)\\)\")",
       "Bash(cd \"c:/Users/user/Documents/VScode/defect-detection\" && sed -n '/^def load_examples/,/^def available_skus/p' demo.py)",
-      "Bash(start \"\" \"docs/pipeline_flow.html\")"
+      "Bash(start \"\" \"docs/pipeline_flow.html\")",
+      "Bash(PYTHONIOENCODING=utf-8 python _check.py)",
+      "Bash(PYTHONIOENCODING=utf-8 python -)",
+      "Bash(timeout 300 python -c \"import demo; demo.build_ui\\(\\); print\\('UI builds OK'\\)\")",
+      "Bash(PYTHONIOENCODING=utf-8 python _chk.py)",
+      "Bash(sed -i 's|<svg viewBox=\"0 0 \\\\\\\\d+ 560\"|<svg viewBox=\"0 0 \\\\\\\\d+ 600\"|; s|VW,VH=1180,560|VW,VH=1180,600|; s|REGISTRATION CLEAN|INFERENCE CLEAN|' _chk.py)"
     ],
     "additionalDirectories": [
       "c:\\Users\\user\\Documents\\VScode\\defect-detection"
