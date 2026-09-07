@@ -149,7 +149,33 @@ Not worth doing for two SKUs; likely worth doing before 200.
 
 ---
 
-## 4. Other open items
+## 4. Inspection sheets — read by hand today
+
+**Now:** the demo *displays* the sheet in the ROI tab, beside the aligned
+reference. Nothing parses it. The ROI boxes in both `sku.json` files were read
+off the sheets by a human and typed in.
+
+Sheets are excluded from the golden set everywhere else, and must stay that
+way: a sheet is a photo of a document on a blue board with a ruler and printed
+annotations. Segmentation would find the board, alignment would inherit the
+error, and PCA would learn blue background as normal.
+
+**Improvable:** an LLM can reliably extract *how many* checks a sheet has and
+*what each says* — "tab at top-right", "corner chamfered". That is the tedious
+part across 200 SKUs and it is genuinely automatable.
+
+**Not improvable as easily:** placing the box. The red circles are in sheet
+coordinates (part on a board, one angle, annotations drawn over the part); ROI
+boxes need canonical canvas coordinates. Mapping between them means running
+the whole pipeline on an image it was not designed for, and the annotation
+overlaps the feature you would align against.
+
+So the realistic split is **sheet → text checks (automated) → box placement
+(human, ~30 s each once you know what to look for)**.
+
+---
+
+## 5. Other open items
 
 - **REVIEW threshold is provisional.** `review_floor = 60.0` was set against
   the observed distribution on 15 images, not derived. The proper basis is the

@@ -1,0 +1,130 @@
+      <svg viewBox="0 0 1120 470" role="img"
+           aria-label="Registration flow: sku.json is read first, then golden photos are preprocessed through segment, ink-mask and align into a canonical canvas. DINOv2 extracts patch features. Geometry ROIs branch off the aligned silhouette mask to fit nominals, while appearance ROIs use the fitted subspace to record golden score distributions. Both are written into model.npz.">
+        <defs>
+          <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 1 L 9 5 L 0 9 z" fill="currentColor"/>
+          </marker>
+          <marker id="ar-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 1 L 9 5 L 0 9 z" fill="currentColor"/>
+          </marker>
+          <marker id="ar-g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 1 L 9 5 L 0 9 z" fill="currentColor"/>
+          </marker>
+        </defs>
+
+        <!-- ============ R0 : sku.json in first ============ -->
+        <rect x="24" y="150" width="150" height="76" rx="3"
+              fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="5 3"/>
+        <text class="s-step" x="34" y="140" fill="var(--ink-faint)">R0</text>
+        <text class="s-label" x="99" y="180" text-anchor="middle" fill="currentColor">sku.json</text>
+        <text class="s-sub" x="99" y="198" text-anchor="middle" fill="var(--ink-soft)">ROI list · input_size</text>
+        <text class="s-sub" x="99" y="213" text-anchor="middle" fill="var(--ink-soft)">read BEFORE fitting</text>
+
+        <line x1="174" y1="188" x2="222" y2="188" stroke="currentColor" stroke-width="1.5" marker-end="url(#ar)"/>
+
+        <!-- ============ R1 : preprocess spine ============ -->
+        <rect x="222" y="120" width="286" height="136" rx="3"
+              fill="var(--sunken)" stroke="var(--rule-firm)" stroke-width="1"/>
+        <text class="s-step" x="232" y="140" fill="var(--ink-faint)">R1 · PREPROCESS</text>
+
+        <rect x="238" y="152" width="82" height="42" rx="2" fill="var(--surface)" stroke="currentColor" stroke-width="1.2"/>
+        <text class="s-sub" x="279" y="170" text-anchor="middle" fill="currentColor">segment</text>
+        <text class="s-sub" x="279" y="184" text-anchor="middle" fill="var(--ink-faint)">birefnet</text>
+
+        <rect x="332" y="152" width="82" height="42" rx="2" fill="var(--surface)" stroke="currentColor" stroke-width="1.2"/>
+        <text class="s-sub" x="373" y="170" text-anchor="middle" fill="currentColor">ink-mask</text>
+        <text class="s-sub" x="373" y="184" text-anchor="middle" fill="var(--ink-faint)">B−R ≥ 22</text>
+
+        <rect x="426" y="152" width="70" height="42" rx="2" fill="var(--surface)" stroke="currentColor" stroke-width="1.2"/>
+        <text class="s-sub" x="461" y="170" text-anchor="middle" fill="currentColor">align</text>
+        <text class="s-sub" x="461" y="184" text-anchor="middle" fill="var(--ink-faint)">ECC</text>
+
+        <line x1="320" y1="173" x2="330" y2="173" stroke="currentColor" stroke-width="1.2" marker-end="url(#ar)"/>
+        <line x1="414" y1="173" x2="424" y2="173" stroke="currentColor" stroke-width="1.2" marker-end="url(#ar)"/>
+        <text class="s-sub" x="365" y="228" text-anchor="middle" fill="var(--ink-soft)">2-pass consensus reference</text>
+        <text class="s-sub" x="365" y="243" text-anchor="middle" fill="var(--ink-faint)">median mask · mean image</text>
+
+        <!-- golden photos in -->
+        <text class="s-sub" x="365" y="104" text-anchor="middle" fill="var(--ink-soft)">golden photos</text>
+        <line x1="365" y1="110" x2="365" y2="118" stroke="currentColor" stroke-width="1.5" marker-end="url(#ar)"/>
+
+        <!-- ============ split from the canvas ============ -->
+        <line x1="508" y1="188" x2="546" y2="188" stroke="currentColor" stroke-width="1.5"/>
+        <circle cx="550" cy="188" r="4" fill="currentColor"/>
+        <text class="s-edge" x="527" y="180" text-anchor="middle" fill="var(--ink-faint)">canvas</text>
+
+        <!-- up to DINOv2 (appearance side) -->
+        <path class="lane-a" d="M 550 188 L 550 92 L 596 92" fill="none" stroke="var(--appearance)" stroke-width="1.6" marker-end="url(#ar-a)"/>
+        <text class="s-edge" x="556" y="128" fill="var(--appearance)">aligned_image</text>
+
+        <!-- down to geometry side -->
+        <path class="lane-g" d="M 550 188 L 550 352 L 596 352" fill="none" stroke="var(--geometry)" stroke-width="1.6" marker-end="url(#ar-g)"/>
+        <text class="s-edge" x="556" y="292" fill="var(--geometry)">aligned_part_mask</text>
+
+        <!-- ============ APPEARANCE LANE ============ -->
+        <text class="s-branch" x="598" y="42" fill="var(--appearance)">APPEARANCE LANE</text>
+        <line class="lane-a" x1="596" y1="52" x2="1096" y2="52" stroke="var(--appearance)" stroke-width="1" opacity=".45"/>
+
+        <rect x="598" y="66" width="128" height="54" rx="3" fill="var(--app-wash)" stroke="var(--appearance)" stroke-width="1.3"/>
+        <text class="s-label" x="662" y="88" text-anchor="middle" fill="var(--appearance)">DINOv2</text>
+        <text class="s-sub" x="662" y="105" text-anchor="middle" fill="var(--ink-soft)">frozen · vitl14</text>
+
+        <line class="lane-a" x1="726" y1="93" x2="758" y2="93" stroke="var(--appearance)" stroke-width="1.5" marker-end="url(#ar-a)"/>
+        <text class="s-edge" x="742" y="84" text-anchor="middle" fill="var(--ink-faint)">1024-D</text>
+
+        <rect x="758" y="66" width="140" height="54" rx="3" fill="var(--app-wash)" stroke="var(--appearance)" stroke-width="1.3"/>
+        <text class="s-label" x="828" y="88" text-anchor="middle" fill="var(--appearance)">fit subspace</text>
+        <text class="s-sub" x="828" y="105" text-anchor="middle" fill="var(--ink-soft)">SVD · τ = 0.97</text>
+
+        <line class="lane-a" x1="898" y1="93" x2="930" y2="93" stroke="var(--appearance)" stroke-width="1.5" marker-end="url(#ar-a)"/>
+
+        <rect x="930" y="66" width="166" height="54" rx="3" fill="none" stroke="var(--appearance)" stroke-width="1.3"/>
+        <text class="s-label" x="1013" y="88" text-anchor="middle" fill="var(--appearance)">μ, C, eigenvalues</text>
+        <text class="s-sub" x="1013" y="105" text-anchor="middle" fill="var(--ink-soft)">patches discarded</text>
+
+        <!-- LOO screen hanging off DINOv2 -->
+        <path class="lane-a" d="M 662 120 L 662 146 L 700 146" fill="none" stroke="var(--appearance)" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#ar-a)"/>
+        <text class="s-sub" x="706" y="143" fill="var(--ink-soft)">leave-one-out screen</text>
+        <text class="s-sub" x="706" y="157" fill="var(--ink-faint)">rejects a contaminated golden (&gt;4σ)</text>
+
+        <!-- golden score distribution -->
+        <path class="lane-a" d="M 828 120 L 828 186 L 866 186" fill="none" stroke="var(--appearance)" stroke-width="1.2" marker-end="url(#ar-a)"/>
+        <text class="s-sub" x="872" y="183" fill="var(--appearance)">golden_scores[roi]</text>
+        <text class="s-sub" x="872" y="197" fill="var(--ink-faint)">per appearance ROI</text>
+        <text class="s-sub" x="872" y="211" fill="var(--ink-faint)">a threshold must sit above it</text>
+
+        <!-- position stats -->
+        <path class="lane-a" d="M 1013 120 L 1013 240 L 975 240" fill="none" stroke="var(--appearance)" stroke-width="1.2" marker-end="url(#ar-a)"/>
+        <text class="s-sub" x="969" y="230" text-anchor="end" fill="var(--appearance)">position stats</text>
+        <text class="s-sub" x="969" y="244" text-anchor="end" fill="var(--ink-faint)">per-cell mean / σ of residual</text>
+        <text class="s-sub" x="969" y="258" text-anchor="end" fill="var(--ink-faint)">a FIXED transform, not per-image</text>
+
+        <!-- ============ GEOMETRY LANE ============ -->
+        <line class="lane-g" x1="596" y1="322" x2="1096" y2="322" stroke="var(--geometry)" stroke-width="1" opacity=".45"/>
+        <text class="s-branch" x="598" y="314" fill="var(--geometry)">GEOMETRY LANE</text>
+
+        <rect x="598" y="330" width="152" height="54" rx="3" fill="var(--geo-wash)" stroke="var(--geometry)" stroke-width="1.3"/>
+        <text class="s-label" x="674" y="352" text-anchor="middle" fill="var(--geometry)">measure silhouette</text>
+        <text class="s-sub" x="674" y="369" text-anchor="middle" fill="var(--ink-soft)">per geometry ROI box</text>
+
+        <line class="lane-g" x1="750" y1="357" x2="782" y2="357" stroke="var(--geometry)" stroke-width="1.5" marker-end="url(#ar-g)"/>
+
+        <rect x="782" y="330" width="150" height="54" rx="3" fill="var(--geo-wash)" stroke="var(--geometry)" stroke-width="1.3"/>
+        <text class="s-label" x="857" y="352" text-anchor="middle" fill="var(--geometry)">fit_nominal</text>
+        <text class="s-sub" x="857" y="369" text-anchor="middle" fill="var(--ink-soft)">median + MAD×1.4826</text>
+
+        <line class="lane-g" x1="932" y1="357" x2="964" y2="357" stroke="var(--geometry)" stroke-width="1.5" marker-end="url(#ar-g)"/>
+
+        <rect x="964" y="330" width="132" height="54" rx="3" fill="none" stroke="var(--geometry)" stroke-width="1.3"/>
+        <text class="s-label" x="1030" y="352" text-anchor="middle" fill="var(--geometry)">geometry_</text>
+        <text class="s-label" x="1030" y="368" text-anchor="middle" fill="var(--geometry)">nominals</text>
+
+        <text class="s-sub" x="674" y="400" text-anchor="middle" fill="var(--ink-faint)">area · fill_ratio · corner_angle · solidity</text>
+        <text class="s-sub" x="857" y="400" text-anchor="middle" fill="var(--ink-faint)">never touches a patch vector</text>
+
+        <!-- ============ model.npz ============ -->
+        <rect x="596" y="424" width="500" height="34" rx="3" fill="var(--sunken)" stroke="var(--rule-firm)" stroke-width="1.2"/>
+        <text class="s-label" x="846" y="446" text-anchor="middle" fill="currentColor">model.npz</text>
+        <path class="lane-g" d="M 1030 384 L 1030 420" fill="none" stroke="var(--geometry)" stroke-width="1.3" marker-end="url(#ar-g)"/>
+        <path class="lane-a" d="M 1013 262 L 1013 300 L 660 300 L 660 420" fill="none" stroke="var(--appearance)" stroke-width="1.3" marker-end="url(#ar-a)"/>
+      </svg>
