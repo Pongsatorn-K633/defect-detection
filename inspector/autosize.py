@@ -359,10 +359,10 @@ def _explain(best: SizeResult, report: AutoSizeReport) -> str:
             "SCREENED on patch count only -- no labelled NG parts were "
             "available, so this is a starting point, not a verified choice.")
         lines.append(
-            "The golden set cannot reveal a separation failure: on SKU "
-            "8983980631 golden scores sat at 1.49 at every size while the "
-            "usable margin collapsed from 7.1x to 1.2x. Add one NG photo per "
-            "sheet check and re-run to confirm.")
+            "Good parts score about the same at every resolution, so the "
+            "golden set cannot show which one actually separates good from "
+            "bad. Add one known-bad photo per sheet check and re-run to "
+            "confirm.")
     lines.append(
         f"Smallest ROI holds {best.min_patches} valid patches "
         f"(target {TARGET_PATCHES}, floor {MIN_PATCHES}).")
