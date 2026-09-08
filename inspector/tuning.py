@@ -93,20 +93,36 @@ def part_score(image, reg, cfg, rois, canvas) -> float:
     return best
 
 
-def suggest_threshold(golden_max: float, best_ng: float) -> float | None:
-    """A value inside the window, biased toward the NG end.
+SAFETY_MARGIN = 0.85
 
-    The floor is golden-derived and therefore optimistic: real OK parts score
-    above golden ones. Splitting the gap evenly would sit too low and reject
-    them, so this takes the geometric mean of the *midpoint* and the ceiling --
-    still clear of the ceiling, but well above the optimistic floor.
+
+def suggest_threshold(golden_max: float, best_ng: float) -> float | None:
+    """Sit just under the best bad part, ignoring the golden floor.
+
+    Anchoring anywhere near `golden_max` is wrong, and wrongly in the
+    dangerous direction. Golden photos are the cleanest parts there are, and
+    everyday good parts score several times higher: on SKU 8983864641 golden
+    peaked at 2.04 while the worst genuinely-good part reached 14.35 -- 7x
+    higher. A value derived from the floor landed at 12 and rejected two good
+    parts.
+
+    `best_ng` is the only number an NG-only run measures against real parts,
+    so the suggestion hangs off it: a little below the weakest defect, which
+    is as high as it can go while still catching everything known-bad. Too
+    high merely misses a marginal defect; too low rejects good parts all day,
+    which is the failure that stops a line.
+
+    The floor is still enforced -- a threshold under `golden_max` would fail
+    the reference parts themselves -- but it never sets the value.
     """
     if not (np.isfinite(golden_max) and np.isfinite(best_ng)):
         return None
     if best_ng <= golden_max:
         return None                  # no window: good and bad overlap
-    midpoint = (golden_max * best_ng) ** 0.5
-    return round(float((midpoint * best_ng) ** 0.5), 1)
+    value = best_ng * SAFETY_MARGIN
+    if value <= golden_max:          # window too narrow to sit inside
+        value = (golden_max + best_ng) / 2.0
+    return round(float(value), 1)
 
 
 def tune(
@@ -177,12 +193,16 @@ def tune(
     res.reason = (
         f"Measured against **{res.n_ng}** known-bad and **{res.n_golden}** "
         f"golden part(s).\n\n"
-        f"At `input_size={best.input_size}` the worst golden part scores "
-        f"**{best.golden_max:.2f}** and the best bad part **{best.best_ng:.2f}**. "
-        f"A threshold has to sit between them; **{res.threshold:g}** is placed "
-        f"toward the upper end on purpose, because the floor comes from golden "
-        f"photos — your cleanest parts — and real production OK parts score "
-        f"above them.\n\n"
+        f"At `input_size={best.input_size}` the weakest bad part scores "
+        f"**{best.best_ng:.2f}**, so **{res.threshold:g}** sits just under it "
+        f"— high enough to pass everyday good parts, low enough to still "
+        f"catch every known-bad one.\n\n"
+        f"⚠️ **This is an upper bound, not a verified value.** Only bad parts "
+        f"were measured. Golden photos scored up to {best.golden_max:.2f}, "
+        f"but they are the cleanest parts you have — everyday good parts "
+        f"score several times higher, and nothing here knows how much. "
+        f"Inspect some known-good parts and check none of them lands above "
+        f"this number.\n\n"
         f"The smallest check holds {best.min_patches} valid patches "
         f"(target {TARGET_PATCHES}).")
     if best.min_patches < MIN_PATCHES:

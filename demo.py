@@ -11,6 +11,7 @@ final answer was.
 from __future__ import annotations
 
 import logging
+import re
 import time
 import traceback
 from pathlib import Path
@@ -39,6 +40,16 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 # banner, which is the one line the user actually needs.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 log = logging.getLogger("demo")
+
+# Gradio 6 takes `css` on launch(), not the Blocks constructor -- passing it
+# to Blocks is dropped silently. A Row centres its children and Markdown has
+# no fixed height, so without this the refresh button stretches and floats.
+UI_CSS = """
+#sku_row { align-items: flex-end !important; gap: 8px !important; }
+#sku_refresh { min-width: 40px !important; width: 40px !important;
+               height: 40px !important; flex: 0 0 40px !important;
+               padding: 0 !important; font-size: 18px !important; }
+"""
 
 WHOLE_PART_MODE = "whole part"
 ROI_MODE = "ROI boxes"
@@ -843,6 +854,56 @@ def fitted_settings_note(state, sku=None) -> str:
     )
 
 
+def do_save_tuned(sku, input_size, threshold, state):
+    """Write just the two measured settings into sku.json.
+
+    Separate from the ROI save because it needs neither ROIs nor a session
+    fit: measuring produces these two numbers and nothing else, and leaving
+    them only in the controls meant a measured value silently never reached
+    the file the pipeline reads.
+    """
+    if not sku:
+        return "Select a part first."
+    try:
+        cfg = SKUConfig.load(sku)
+    except FileNotFoundError:
+        return (f"No `sku.json` for **{sku}** yet - define its checks in "
+                f"step 2 and save those first.")
+
+    old_size, old_thr = cfg.input_size, cfg.threshold
+    cfg.input_size = int(input_size)
+    cfg.threshold = float(threshold)
+    for r in cfg.rois:
+        # Per-ROI overrides that mirrored the SKU default would otherwise
+        # keep the old number and quietly win at inspection.
+        if r.threshold is not None and abs(r.threshold - old_thr) < 1e-9:
+            r.threshold = float(threshold)
+
+    # The recorded window belongs to the value that was measured. Keep it
+    # only if the number is unchanged; otherwise the staleness check would
+    # vouch for a number nobody measured.
+    if abs((old_thr or 0) - float(threshold)) > 1e-9:
+        cfg.threshold_grid = None
+        cfg.threshold_worst_ok = None
+        cfg.threshold_best_ng = None
+
+    path = cfg.save()
+    changed = []
+    if old_size != cfg.input_size:
+        changed.append(f"input resolution {old_size} to **{cfg.input_size}**")
+    if abs((old_thr or 0) - cfg.threshold) > 1e-9:
+        changed.append(f"threshold {old_thr:g} to **{cfg.threshold:g}**")
+    if not changed:
+        return f"`{path.name}` already had these values - nothing changed."
+
+    msg = f"Saved to `{path}`: " + ", ".join(changed) + "."
+    if old_size != cfg.input_size:
+        msg += (f"\n\n**Re-fit in step 1** - the saved model is still at "
+                f"{old_size}, and a model scored at a different resolution "
+                f"than it was fitted at loses its position statistics.")
+    return msg
+
+
 def do_roi_save(sku, threshold, state):
     """Write sku.json -- the file the pipeline actually reads."""
     reg = state.get("reg")
@@ -990,6 +1051,82 @@ def do_inspect(test_file, roi_mode, roi_text, threshold, state, sku=None):
 
 
 # ---------------------------------------------------------------- panel 5
+
+def _first_score(text):
+    """The score that decided the verdict, from either verdict layout."""
+    m = re.search(r"\| score \| \*\*([\d.]+)\*\*", text)
+    if m:
+        return m.group(1)
+    # Older layout: a per-ROI table. The worst score is what decided it.
+    vals = [float(v) for v in re.findall(r"\| ([\d.]+) \| [\d.]+ \|", text)]
+    return f"{max(vals):.2f}" if vals else "-"
+
+
+def _failed_checks(text):
+    m = re.search(r"^Failed: (.+)$", text, re.M)
+    if m:
+        return m.group(1)
+    # Older layout: read the rows marked FAIL out of the per-ROI table.
+    bad = re.findall(r"^\| ([\w_]+) \| \w+ \|[^|]+\|[^|]+\| \*\*FAIL\*\*",
+                     text, re.M)
+    return ", ".join(f"`{b}`" for b in bad)
+
+
+def do_inspect_all(gallery, roi_mode, roi_text, threshold, state,
+                   sku=None, progress=gr.Progress()):
+    """Score every image in the gallery and list the verdicts.
+
+    The single-part button answers "is this one good"; this answers "how did
+    the batch do". No heatmap: that belongs to one part, and picking which
+    one to show would be arbitrary.
+    """
+    paths = []
+    for item in (gallery or []):
+        path = item[0] if isinstance(item, (list, tuple)) else item
+        if isinstance(path, dict):
+            path = path.get("path", "")
+        if path:
+            paths.append(str(path))
+    if not paths:
+        return (None, None,
+                "Nothing to inspect - upload parts or load this part's saved "
+                "test images first.", "")
+
+    rows = []
+    counts = {"PASS": 0, "FAIL": 0, "RETAKE": 0}
+    t0 = time.time()
+    for i, path in enumerate(paths):
+        progress(i / len(paths),
+                 desc=f"{Path(path).name}  ({i + 1}/{len(paths)})")
+        out = do_inspect(path, roi_mode, roi_text, threshold, state, sku)
+        text = out[2] or ""
+        # Match on the word, not the heading level: do_inspect's verdict
+        # format has changed more than once and a level-specific parser
+        # silently reported every part as unknown.
+        first = text.split(chr(10))[0]
+        if "RETAKE" in first:
+            verdict, score, why = "RETAKE", "-", "photo unusable - retake it"
+        elif "PASS" in first:
+            verdict, score, why = "PASS", _first_score(text), ""
+        elif "FAIL" in first:
+            verdict, score, why = "FAIL", _first_score(text), _failed_checks(text)
+        else:
+            verdict, score, why = "-", "-", first[:60]
+        counts[verdict] = counts.get(verdict, 0) + 1
+        mark = {"PASS": "PASS", "FAIL": "**FAIL**",
+                "RETAKE": "*RETAKE*"}.get(verdict, verdict)
+        rows.append(f"| {Path(path).name} | {mark} | {score} | {why} |")
+
+    elapsed = time.time() - t0
+    head = (f"# {counts['PASS']} pass, {counts['FAIL']} fail"
+            + (f", {counts['RETAKE']} retake" if counts["RETAKE"] else "")
+            + chr(10) + chr(10)
+            + "| part | result | score | why |" + chr(10)
+            + "|---|---|---|---|" + chr(10))
+    timing = (f"{len(paths)} part(s) in {elapsed:.1f} s "
+              f"({elapsed / len(paths) * 1000:.0f} ms each)")
+    return None, None, head + chr(10).join(rows), timing
+
 
 def _read_labels(sku: str) -> dict[str, int]:
     """Ground truth from data/labels/<sku>.csv (`image,label`, 1 = NG)."""
@@ -1390,10 +1527,16 @@ def build_ui():
                 sku_add_btn = gr.Button("Add", size="sm")
         # Status strip for whichever part is selected -- what exists for it,
         # visible from all three tabs without switching back.
-        sku_info = gr.Markdown(
-            sku_summary(skus[0]) if skus else
-            "*No part yet.* Type a part number above and press **Add**."
-        )
+        with gr.Row(elem_id="sku_row"):
+            sku_info = gr.Markdown(
+                sku_summary(skus[0]) if skus else
+                "*No part yet.* Type a part number above and press **Add**.",
+                scale=0)
+            # Re-reads sku.json: the table is the last thing checked before
+            # inspecting, and a save made in another tab is otherwise
+            # invisible here.
+            sku_refresh_btn = gr.Button("\u21bb", elem_id="sku_refresh",
+                                        scale=0, size="sm")
 
         # No sidebar: every remaining setting belongs to one stage and lives
         # inside it. `threshold` is never read by register_sku, only by
@@ -1573,21 +1716,22 @@ def build_ui():
                             info="patch grid = this / 14 along the long side; "
                                  "step 1 fits at it and inspection reuses it",
                             allow_custom_value=True)
-                        # No separate threshold field here: a second copy was
-                        # write-only, so a measured value sat in it while
-                        # do_roi_save wrote the slider's number to sku.json
-                        # instead. Tuning now sets the one control that is
-                        # actually read -- the verdict threshold in Inspection.
-                        gr.Markdown(
-                            "The measured **score threshold** is written "
-                            "straight into *verdict threshold* on the "
-                            "Inspection tab — the same number `sku.json` "
-                            "saves. There is only one."
-                        )
+                        # Editable, and mirrored to the Inspection slider so
+                        # there is still one number: display-only left it with
+                        # no loading bar of its own while the resolution beside
+                        # it had one, so the right half looked frozen.
+                        tune_thr = gr.Number(
+                            label="score threshold", value=6.0, scale=1,
+                            info="an ROI fails above this; the same number "
+                                 "the Inspection tab uses and sku.json saves")
+                    save_tuned_btn = gr.Button(
+                        "Save input res and threshold", variant="primary")
+                    save_tuned_status = gr.Markdown()
                     gr.Markdown(
                         "*Measuring refits at several resolutions — minutes, "
-                        "not seconds. Afterwards, **re-fit in step 1** at the "
-                        "chosen resolution, then save `sku.json` in step 2.*"
+                        "not seconds. It only fills the two boxes above; "
+                        "nothing reaches `sku.json` until you save. If the "
+                        "resolution changed, re-fit in step 1 afterwards.*"
                     )
 
                 # Outside the numbered tabs, so it stays put while they change.
@@ -1694,7 +1838,10 @@ def build_ui():
                 test_gallery = gr.Gallery(
                     label="saved test images — click one to inspect it",
                     columns=6, height=160, allow_preview=False)
-                inspect_btn = gr.Button("Inspect", variant="primary")
+                with gr.Row():
+                    inspect_btn = gr.Button("Inspect one by one",
+                                            variant="primary")
+                    inspect_all_btn = gr.Button("Inspect all")
 
                 with gr.Group():
                     verdict_md = gr.Markdown()
@@ -1825,10 +1972,17 @@ def build_ui():
         ng_save_btn.click(do_ng_import, [ng_files, sku_pick],
                           ng_status).then(_ng_list, sku_pick, ng_gallery)
         tune_btn.click(do_tune, [ref_files, sku_pick, state],
-                       [input_size, threshold, tune_status])
+                       [input_size, tune_thr, threshold, tune_status])
+        tune_thr.change(lambda v: v, tune_thr, threshold)
+        threshold.change(lambda v: v, threshold, tune_thr)
         inspect_btn.click(
             do_inspect,
             [test_file, roi_mode, roi_text, threshold, state, sku_pick],
+            [heat_img, stages_img, verdict_md, timing_box],
+        )
+        inspect_all_btn.click(
+            do_inspect_all,
+            [test_gallery, roi_mode, roi_text, threshold, state, sku_pick],
             [heat_img, stages_img, verdict_md, timing_box],
         )
 
@@ -1885,6 +2039,20 @@ def build_ui():
             except FileNotFoundError:
                 return gr.update()
 
+        # Save the two measured values, then pull every display back in step
+        # so the table, the panel and the sliders cannot disagree.
+        save_tuned_btn.click(
+            do_save_tuned, [sku_pick, input_size, threshold, state],
+            save_tuned_status
+        ).then(sku_summary, sku_pick, sku_info
+        ).then(_thr_note, [state, sku_pick], thr_note)
+
+        # The summary table is the last thing checked before inspecting.
+        sku_refresh_btn.click(sku_summary, sku_pick, sku_info
+        ).then(_thr_note, [state, sku_pick], thr_note
+        ).then(_thr_saved, sku_pick, threshold
+        ).then(_size_saved, sku_pick, input_size)
+
         app.load(_thr_saved, sku_pick, threshold)
         sku_pick.change(_thr_saved, sku_pick, threshold)
         # The inherited-settings panel reads the saved model too, so it must
@@ -1898,4 +2066,4 @@ if __name__ == "__main__":
     print("\nStarting the demo UI - open http://127.0.0.1:7860 "
           "(the first run downloads model weights, which takes a few "
           "minutes)\n", flush=True)
-    build_ui().launch()
+    build_ui().launch(css=UI_CSS)

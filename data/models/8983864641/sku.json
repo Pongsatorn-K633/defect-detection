@@ -5,7 +5,7 @@
     988
   ],
   "ref_area_px": 30407.0,
-  "threshold": 18.0,
+  "threshold": 18.5,
   "rois": [
     {
       "id": "corner_top_left",
@@ -16,7 +16,6 @@
         260,
         220
       ],
-      "threshold": 18.0,
       "note": "Inspection sheet check 2: top-left corner must be chamfered. IS sheet: มุมด้านบนซ้ายตัดเฉียง"
     },
     {
@@ -44,7 +43,6 @@
         180,
         120
       ],
-      "threshold": 18.0,
       "note": "Inspection sheet check 1: the part must have the tab at top right. IS sheet: ชิ้นงานต้องมีปีกอยู่ด้านขวาบน"
     },
     {
