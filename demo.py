@@ -49,6 +49,47 @@ UI_CSS = """
 #sku_refresh { min-width: 40px !important; width: 40px !important;
                height: 40px !important; flex: 0 0 40px !important;
                padding: 0 !important; font-size: 18px !important; }
+/* Inspection images: show the whole frame, capped so it stays on screen.
+   A fixed height alone makes Gradio fill the box and crop the edges off --
+   which on a heatmap hides exactly the defect the operator is looking for.
+   `contain` fits the full image inside instead, letterboxing rather than
+   cutting, and the vh cap keeps the verdict above it visible without
+   scrolling. */
+#heat_img img, #stages_img img {
+    object-fit: contain !important;
+    width: 100% !important;
+    height: auto !important;
+}
+#heat_img img { max-height: 55vh !important; }
+/* The stages strip is a wide row of small panels, so it needs less height
+   than the single heatmap to read at the same scale. */
+#stages_img img { max-height: 30vh !important; }
+#heat_img, #stages_img { overflow: hidden !important; }
+/* Test-image thumbnails: whole part visible, and the box no taller than the
+   thumbnails inside it. Capping the cells while letting the grid keep its own
+   height left one image floating in a mostly empty panel, so the grid is
+   sized by its contents and only starts scrolling once there are enough rows
+   to need it. */
+#test_gallery .thumbnail-item img,
+#test_gallery .grid-wrap img {
+    object-fit: contain !important;
+    max-height: 26vh !important;
+}
+#test_gallery .grid-wrap {
+    max-height: none !important;
+    height: auto !important;
+    overflow-y: auto !important;
+}
+#test_gallery .grid-container {
+    align-content: start !important;
+    gap: 8px !important;
+}
+/* A single saved image should not be stretched across the full row width --
+   it just becomes a wide, short cell. Capping the cell keeps its proportions. */
+#test_gallery .thumbnail-item {
+    max-width: 320px !important;
+    aspect-ratio: auto !important;
+}
 """
 
 WHOLE_PART_MODE = "whole part"
@@ -646,24 +687,143 @@ def do_roi_load(sku, state):
             f"overwrite.{hint}")
 
 
-def _ng_list(sku):
-    """Known-bad photos already saved for this part."""
-    from inspector.config import NG_DIR
-    folder = NG_DIR / sku if sku else None
+def _labelled_list(root, sku):
+    """Photos already saved for this part under a labelled folder."""
+    folder = root / sku if sku else None
     if not folder or not folder.exists():
         return []
     return [str(x) for x in sorted(folder.iterdir())
             if x.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp"}]
 
 
-def do_ng_import(files, sku):
-    """Copy uploaded bad-part photos into ng_images/<sku>/.
+def _ng_list(sku):
+    """Known-bad photos already saved for this part."""
+    from inspector.config import NG_DIR
+    return _labelled_list(NG_DIR, sku)
+
+
+def _ok_list(sku):
+    """Known-good photos already saved for this part."""
+    from inspector.config import OK_DIR
+    return _labelled_list(OK_DIR, sku)
+
+
+def _labelled_label(root, sku, kind):
+    """Gallery title that says what is on disk, so saved photos read as ready.
+
+    An empty-looking gallery and a full one titled the same way are
+    indistinguishable at a glance, and re-uploading photos that are already
+    saved is the obvious thing to do about it.
+    """
+    n = len(_labelled_list(root, sku))
+    if not n:
+        return gr.update(label=f"{kind} set for this part — none saved yet")
+    return gr.update(label=f"{kind} set for this part — {n} saved, ready to use")
+
+
+def _ng_gallery_label(sku):
+    from inspector.config import NG_DIR
+    return _labelled_label(NG_DIR, sku, "NG")
+
+
+def _ok_gallery_label(sku):
+    from inspector.config import OK_DIR
+    return _labelled_label(OK_DIR, sku, "OK")
+
+
+# What each set is for, and how many photos it takes to do that job. The
+# golden numbers are the binding ones: the subspace is fitted on them, so too
+# few models almost no legitimate variation and ordinary good parts start
+# scoring as anomalies. OK and NG are measured against that model, so they are
+# about sampling the range rather than about the fit.
+GOLDEN_MIN, GOLDEN_GOOD = 4, 8
+OK_MIN, OK_GOOD = 2, 5
+NG_GOOD = 3
+
+
+def _golden_count(sku):
+    """Golden photos, excluding the inspection sheet."""
+    from inspector.config import GOLDEN_DIR
+    return len([p for p in _labelled_list(GOLDEN_DIR, sku)
+                if not Path(p).name.startswith("IS_")])
+
+
+def _tune_ready(sku):
+    """Say whether Measure can run now, and what more photos would buy.
+
+    Each set limits the result in its own way, so a single "add more images"
+    would be useless: golden constrains the fit, OK sets the floor the
+    threshold sits above, NG sets the ceiling it sits below.
+    """
+    if not sku:
+        return ""
+    from inspector.config import NG_DIR, OK_DIR
+    n_ng = len(_labelled_list(NG_DIR, sku))
+    n_ok = len(_labelled_list(OK_DIR, sku))
+    n_gold = _golden_count(sku)
+
+    tips = []
+    if n_gold < GOLDEN_MIN:
+        tips.append(
+            f"**Golden — {n_gold}, want at least {GOLDEN_MIN}.** The subspace "
+            f"is fitted on these, and {n_gold} models almost none of the "
+            f"lighting and handling variation a real part shows, so ordinary "
+            f"good parts score as anomalies. This one limits everything "
+            f"downstream — add here first.")
+    elif n_gold < GOLDEN_GOOD:
+        tips.append(
+            f"**Golden — {n_gold}, {GOLDEN_GOOD} is comfortable.** More golden "
+            f"parts spanning real lighting and placement make every score "
+            f"below steadier.")
+    if not n_ok:
+        tips.append(
+            f"**Known-good — none.** Without them the threshold is an upper "
+            f"bound, not a measured window: the golden set is *fitted on*, so "
+            f"it scores near zero and cannot say where everyday good parts "
+            f"land. {OK_MIN} is the minimum, {OK_GOOD} is comfortable.")
+    elif n_ok < OK_MIN:
+        tips.append(
+            f"**Known-good — {n_ok}.** The floor rests on a single part, so "
+            f"one unusual photo moves the threshold. {OK_GOOD} is comfortable.")
+    elif n_ok < OK_GOOD:
+        tips.append(
+            f"**Known-good — {n_ok}, {OK_GOOD} is comfortable.** These set the "
+            f"floor the threshold must clear, so they should cover the full "
+            f"range of parts you would still ship.")
+    if not n_ng:
+        tips.append(
+            f"**Known-bad — none.** Nothing can be measured without them: they "
+            f"are what shows which resolution separates good from bad, and "
+            f"where the failing side starts. At least one per check on the "
+            f"inspection sheet.")
+    elif n_ng < NG_GOOD:
+        tips.append(
+            f"**Known-bad — {n_ng}.** Aim for at least one per check on the "
+            f"inspection sheet, so every defect the sheet names is represented "
+            f"by a part that actually shows it.")
+
+    if not n_ng:
+        head = ("**Cannot measure yet — no known-bad photos for this part.**")
+    else:
+        have = [f"**{n_ng}** known-bad"]
+        if n_ok:
+            have.append(f"**{n_ok}** known-good")
+        have.append(f"**{n_gold}** golden")
+        head = (f"Ready to measure on {', '.join(have)} photo(s) already saved "
+                f"for this part — just press the button, no upload needed.")
+    if tips:
+        head += "\n\nTo make the result stronger:\n\n" + "\n".join(
+            f"- {t}" for t in tips)
+    return head
+
+
+def _import_labelled(files, sku, root, folder_name, what):
+    """Copy uploaded photos into <root>/<sku>/.
 
     Separate from test_images/ on purpose: these are tuning inputs with a
     known label, not parts being judged. Keeping them apart removes the
     question of which folder a photo belongs in.
     """
-    from inspector.config import NG_DIR
     if not sku:
         return "Select a part first."
     paths = [Path(f if isinstance(f, str) else f.name) for f in (files or [])]
@@ -672,23 +832,54 @@ def do_ng_import(files, sku):
 
     import shutil
 
-    dest = NG_DIR / sku
+    dest = root / sku
     dest.mkdir(parents=True, exist_ok=True)
     added, same = [], []
     for src in paths:
         if not src.exists():
             continue
         target = dest / src.name
-        if target.exists() and target.stat().st_size == src.stat().st_size                 and target.read_bytes() == src.read_bytes():
+        if target.exists() and target.stat().st_size == src.stat().st_size \
+                and target.read_bytes() == src.read_bytes():
             same.append(src.name)
             continue
         shutil.copy2(src, target)
         added.append(src.name)
     if added:
-        return (f"Saved **{len(added)}** bad-part photo(s) to "
-                f"`ng_images/{sku}/`" +
+        return (f"Saved **{len(added)}** {what} photo(s) to "
+                f"`{folder_name}/{sku}/`" +
                 (f"; {len(same)} already there." if same else "."))
-    return f"All {len(same)} photo(s) are already in `ng_images/{sku}/`."
+    return f"All {len(same)} photo(s) are already in `{folder_name}/{sku}/`."
+
+
+def do_ng_import(files, sku):
+    """Copy uploaded bad-part photos into ng_images/<sku>/."""
+    from inspector.config import NG_DIR
+    return _import_labelled(files, sku, NG_DIR, "ng_images", "bad-part")
+
+
+def do_ok_import(files, sku):
+    """Copy uploaded good-part photos into ok_images/<sku>/.
+
+    Not the same as the golden set in step 1: those are what the subspace is
+    fitted on, so they score near zero and cannot say where everyday good parts
+    land. These are ordinary passing parts, scored like any test part, and they
+    are what gives the threshold a measured floor.
+    """
+    from inspector.config import OK_DIR
+    return _import_labelled(files, sku, OK_DIR, "ok_images", "good-part")
+
+
+def _fmt_duration(seconds: float) -> str:
+    """Elapsed time in the units a person would use for it.
+
+    Measuring takes minutes, so raw seconds past ~90 read as noise: "4 min 12 s"
+    lands where "252.4 s" has to be divided first.
+    """
+    if seconds < 90:
+        return f"{seconds:.1f} s"
+    minutes, secs = divmod(int(round(seconds)), 60)
+    return f"{minutes} min {secs:02d} s"
 
 
 def do_tune(files, sku, state, progress=gr.Progress()):
@@ -717,20 +908,39 @@ def do_tune(files, sku, state, progress=gr.Progress()):
         return gr.update(), gr.update(), ("**Do step 1 first** — at least 2 "
                                           "golden images are needed to fit.")
 
+    # Measuring refits at every candidate resolution, so it runs for minutes.
+    # Reporting how long it took -- on the failure path too -- is the
+    # difference between "that was slow" and "that hung".
+    t0 = time.time()
     try:
         res = tuning.tune(sku, paths, rois,
                           say=lambda m: progress(0.5, desc=m))
     except Exception as exc:  # noqa: BLE001 - surface the real cause
         log.exception("tuning failed")
         return (gr.update(), gr.update(),
-                f"Measuring failed: {exc}\n\n```\n"
-                f"{traceback.format_exc()[-600:]}\n```")
+                f"Measuring failed after {_fmt_duration(time.time() - t0)}: "
+                f"{exc}\n\n```\n{traceback.format_exc()[-600:]}\n```")
+    elapsed = time.time() - t0
 
     if not res.ok:
-        return gr.update(), gr.update(), res.reason
+        return (gr.update(), gr.update(),
+                f"{res.reason}\n\n*Measured in {_fmt_duration(elapsed)}.*")
+
+    # Remember what was measured so saving can record the window alongside the
+    # number. Only a run with real OK parts measured a floor worth recording.
+    if res.n_ok > 0 and res.threshold is not None:
+        state["tuned"] = {"threshold": res.threshold,
+                          "input_size": res.input_size,
+                          "worst_ok": res.worst_ok,
+                          "best_ng": res.best_ng}
+    else:
+        state.pop("tuned", None)
 
     md = (f"### input resolution **{res.input_size}** · score threshold "
-          f"**{res.threshold:g}**\n\n{tuning.table(res)}\n\n{res.reason}")
+          f"**{res.threshold:g}**\n\n"
+          f"*Measured in {_fmt_duration(elapsed)} across "
+          f"{len(res.sweep)} resolution(s).*\n\n"
+          f"{tuning.table(res)}\n\n{res.reason}")
     thr = gr.update() if res.threshold is None else res.threshold
     return res.input_size, thr, md
 
@@ -879,10 +1089,18 @@ def do_save_tuned(sku, input_size, threshold, state):
         if r.threshold is not None and abs(r.threshold - old_thr) < 1e-9:
             r.threshold = float(threshold)
 
-    # The recorded window belongs to the value that was measured. Keep it
-    # only if the number is unchanged; otherwise the staleness check would
-    # vouch for a number nobody measured.
-    if abs((old_thr or 0) - float(threshold)) > 1e-9:
+    # The recorded window belongs to the value that was measured. A run with
+    # known-good parts measured both sides, so record it against the number it
+    # produced; anything else leaves the file vouching for a value nobody
+    # measured, so clear it.
+    tuned = (state or {}).get("tuned") or {}
+    measured_here = (
+        tuned and abs(tuned["threshold"] - float(threshold)) < 1e-9
+        and int(tuned["input_size"]) == int(input_size))
+    if measured_here:
+        cfg.threshold_worst_ok = float(tuned["worst_ok"])
+        cfg.threshold_best_ng = float(tuned["best_ng"])
+    elif abs((old_thr or 0) - float(threshold)) > 1e-9:
         cfg.threshold_grid = None
         cfg.threshold_worst_ok = None
         cfg.threshold_best_ng = None
@@ -1677,7 +1895,7 @@ def build_ui():
                 # Third and last, because it needs what steps 1 and 2 produce:
                 # golden images to fit on, and an ROI to measure inside. It
                 # was previously above step 1, where it could only ever fail.
-                with gr.Tab("3. Tuning with NG"):
+                with gr.Tab("3. Tuning with NG / OK"):
                     gr.Markdown(
                         "Every part scores differently, so these two settings "
                         "have to be measured for **this** part. Neither can "
@@ -1691,8 +1909,11 @@ def build_ui():
                         "one, so you need at least one of each to place it.\n\n"
                         "Upload photos of **known-bad parts** below — at "
                         "least one per check on the inspection sheet — and "
-                        "both are measured instead of guessed. Needs steps 1 "
-                        "and 2 first."
+                        "both are measured instead of guessed. Add "
+                        "**known-good parts** as well and the threshold is "
+                        "placed inside a gap measured on both sides, rather "
+                        "than estimated from the bad parts alone. Needs steps "
+                        "1 and 2 first."
                     )
                     ng_files = gr.File(
                         file_count="multiple", file_types=["image"],
@@ -1705,6 +1926,27 @@ def build_ui():
                         ng_save_btn = gr.Button("save these to the part")
                         ng_status = gr.Markdown()
 
+                    gr.Markdown(
+                        "Upload photos of **known-good parts** below — "
+                        "ordinary parts that pass, not the golden ones from "
+                        "step 1. The subspace is *fitted on* the golden set, "
+                        "so those score near zero and cannot show where "
+                        "everyday good parts land; without real good parts "
+                        "the threshold is only an upper bound. Optional, but "
+                        "it turns the suggestion into a measured window."
+                    )
+                    ok_files = gr.File(
+                        file_count="multiple", file_types=["image"],
+                        label="known-good parts (OK) — parts that pass every "
+                              "check on the inspection sheet",
+                        height=120)
+                    ok_gallery = gr.Gallery(label="OK set for this part",
+                                            columns=6, height=150)
+                    with gr.Row():
+                        ok_save_btn = gr.Button("save these to the part")
+                        ok_status = gr.Markdown()
+
+                    tune_ready = gr.Markdown()
                     tune_btn = gr.Button("Measure input resolution and "
                                          "threshold", variant="primary")
                     tune_status = gr.Markdown()
@@ -1835,9 +2077,21 @@ def build_ui():
                     height=120)
                 load_test = gr.Button(
                     "…or load this part's saved test images")
+                # `columns` is a maximum, not a fixed count: with one saved
+                # image a 6-column grid gave it a sixth of the width and
+                # cropped it to a strip. `object_fit="contain"` shows the whole
+                # part in whatever cell it gets, and the CSS below caps the
+                # cell height so a small set does not fill the screen either.
+                # allow_preview: clicking opens the image full-size, which is
+                # the only way to actually see a defect before inspecting. The
+                # `select` handler still fires, so a click both previews the
+                # image and selects it as the part to inspect.
                 test_gallery = gr.Gallery(
-                    label="saved test images — click one to inspect it",
-                    columns=6, height=160, allow_preview=False)
+                    label="saved test images — click one to view it full size "
+                          "and select it for inspection",
+                    columns=4, height="auto", object_fit="contain",
+                    elem_id="test_gallery", allow_preview=True,
+                    preview=False)
                 with gr.Row():
                     inspect_btn = gr.Button("Inspect one by one",
                                             variant="primary")
@@ -1847,11 +2101,13 @@ def build_ui():
                     verdict_md = gr.Markdown()
                     timing_box = gr.Textbox(label="timings and alignment",
                                             lines=6)
+                    # No fixed `height`: it crops to fill. The CSS above caps
+                    # the size in viewport units and fits the whole frame.
                     heat_img = gr.Image(label="anomaly heatmap on aligned part",
-                                        height=420)
+                                        elem_id="heat_img")
                     stages_img = gr.Image(label="stages: raw -> mask -> ink -> "
                                                 "aligned -> ROI crops",
-                                          height=260)
+                                          elem_id="stages_img")
 
               with gr.Tab("③ ACCURACY — measure it"):
                     gr.Markdown(
@@ -1922,13 +2178,42 @@ def build_ui():
         new_sku_box.submit(do_sku_create, [new_sku_box, state], _add_outputs)
         sku_save_imgs.click(do_sku_import, [ref_files, sku_pick],
                             sku_import_status).then(
-                                sku_summary, sku_pick, sku_info)
+                                sku_summary, sku_pick, sku_info).then(
+                                    # Step 3's readiness line counts golden
+                                    # images too, so saving them here changes
+                                    # what it should say.
+                                    _tune_ready, sku_pick, tune_ready)
         sku_del_btn.click(do_sku_delete, [sku_pick, sku_del_confirm, state],
                           sku_selectors + [roi_save_sku, sku_del_status]).then(
                               sku_summary, sku_pick, sku_info)
 
-        load_test.click(lambda s: load_examples(s, "test"),
-                        sku_pick, test_gallery)
+        def _test_list(sku):
+            return load_examples(sku, "test") if sku else []
+
+        def _test_gallery_label(sku):
+            """Say how many saved test images this part has.
+
+            The gallery reads from test_images/<sku>/ on disk, so an empty one
+            means the folder is empty -- not that a button still needs
+            pressing. Saying so removes the guess.
+            """
+            n = len(_test_list(sku))
+            if not n:
+                return gr.update(
+                    label="saved test images — none in test_images/ for this "
+                          "part; upload one above instead")
+            return gr.update(
+                label=f"saved test images — {n} for this part, click one to "
+                      f"inspect it")
+
+        load_test.click(_test_list, sku_pick, test_gallery)
+        # Loaded up front and on every part switch, like the NG and OK
+        # galleries. Behind a button it looked empty until pressed, and after
+        # switching parts it kept showing the previous part's images.
+        for _fn, _out in ((_test_list, test_gallery),
+                          (_test_gallery_label, test_gallery)):
+            app.load(_fn, sku_pick, _out)
+            sku_pick.change(_fn, sku_pick, _out)
 
         def _pick_test(sku, evt: gr.SelectData):
             """A gallery click selects that image as the part to inspect."""
@@ -1970,9 +2255,32 @@ def build_ui():
         ng_files.change(lambda fs: [f if isinstance(f, str) else f.name
                                     for f in (fs or [])], ng_files, ng_gallery)
         ng_save_btn.click(do_ng_import, [ng_files, sku_pick],
-                          ng_status).then(_ng_list, sku_pick, ng_gallery)
+                          ng_status).then(_ng_list, sku_pick, ng_gallery).then(
+                              _ng_gallery_label, sku_pick, ng_gallery).then(
+                                  _tune_ready, sku_pick, tune_ready)
+        ok_files.change(lambda fs: [f if isinstance(f, str) else f.name
+                                    for f in (fs or [])], ok_files, ok_gallery)
+        ok_save_btn.click(do_ok_import, [ok_files, sku_pick],
+                          ok_status).then(_ok_list, sku_pick, ok_gallery).then(
+                              _ok_gallery_label, sku_pick, ok_gallery).then(
+                                  _tune_ready, sku_pick, tune_ready)
+
+        # Both galleries show what is saved on disk for the selected part, so
+        # they have to follow the picker and be populated at launch. Without
+        # this they showed the previous part's photos -- or nothing at all --
+        # while the measurement quietly used whatever was on disk, and photos
+        # already in place looked like they still needed uploading.
+        for _fn, _out in ((_ng_list, ng_gallery), (_ok_list, ok_gallery),
+                          (_ng_gallery_label, ng_gallery),
+                          (_ok_gallery_label, ok_gallery),
+                          (_tune_ready, tune_ready)):
+            app.load(_fn, sku_pick, _out)
+            sku_pick.change(_fn, sku_pick, _out)
+        # Three outputs, matching do_tune's three return values. The Inspection
+        # slider is deliberately not listed: tune_thr mirrors into it below, so
+        # naming it here only desynchronises the arity from the handler.
         tune_btn.click(do_tune, [ref_files, sku_pick, state],
-                       [input_size, tune_thr, threshold, tune_status])
+                       [input_size, tune_thr, tune_status])
         tune_thr.change(lambda v: v, tune_thr, threshold)
         threshold.change(lambda v: v, threshold, tune_thr)
         inspect_btn.click(

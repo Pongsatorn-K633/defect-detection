@@ -32,7 +32,7 @@ import numpy as np
 from . import features as feat_mod
 from . import subspace as sub_mod
 from .autosize import COARSE, MIN_PATCHES, TARGET_PATCHES, evaluate_size
-from .config import NG_DIR, PipelineConfig
+from .config import NG_DIR, OK_DIR, PipelineConfig
 from .pipeline import load_image, preprocess
 from .register import register_sku
 from .roi import ROI, SKUConfig, patch_grid_box
@@ -40,13 +40,29 @@ from .roi import ROI, SKUConfig, patch_grid_box
 log = logging.getLogger(__name__)
 
 
-def ng_paths(sku: str) -> list[Path]:
-    """Known-bad photos for a SKU."""
-    folder = NG_DIR / sku
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp"}
+
+
+def _labelled_paths(folder: Path) -> list[Path]:
     if not folder.exists():
         return []
     return [p for p in sorted(folder.iterdir())
-            if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp"}]
+            if p.suffix.lower() in IMAGE_SUFFIXES]
+
+
+def ng_paths(sku: str) -> list[Path]:
+    """Known-bad photos for a SKU."""
+    return _labelled_paths(NG_DIR / sku)
+
+
+def ok_paths(sku: str) -> list[Path]:
+    """Known-good photos for a SKU -- ordinary passing parts, not golden ones.
+
+    Optional. Without them the threshold has no measured floor and the
+    suggestion can only hang off the NG side; with them it can sit in a real
+    gap between two measured populations.
+    """
+    return _labelled_paths(OK_DIR / sku)
 
 
 @dataclass
@@ -57,8 +73,13 @@ class TuningResult:
     input_size: int | None = None
     threshold: float | None = None
     golden_max: float = float("nan")
+    # Worst score among parts that must pass. Includes the golden set, but the
+    # number only means something once real OK parts are in it: golden parts
+    # are fitted on and score near zero regardless.
+    worst_ok: float = float("nan")
     best_ng: float = float("nan")
     n_ng: int = 0
+    n_ok: int = 0
     n_golden: int = 0
     sweep: list = field(default_factory=list)
     reason: str = ""
@@ -96,8 +117,30 @@ def part_score(image, reg, cfg, rois, canvas) -> float:
 SAFETY_MARGIN = 0.85
 
 
+def suggest_in_gap(worst_ok: float, best_ng: float) -> float | None:
+    """Sit inside a gap measured on both sides.
+
+    The geometric mean of the worst passing part and the best failing one,
+    which is the rule `autosize.recommend` already uses. It sits between the
+    two populations without being dragged by either, and unlike the NG-anchored
+    fallback it rests on a floor that was actually measured rather than assumed.
+
+    Returns None when the populations overlap -- that is a real finding about
+    the parts, not a number to paper over.
+    """
+    if not (np.isfinite(worst_ok) and np.isfinite(best_ng)):
+        return None
+    if best_ng <= worst_ok:
+        return None                  # no window: good and bad overlap
+    value = float(np.sqrt(max(worst_ok, 1e-6) * best_ng))
+    return round(value, 1)
+
+
 def suggest_threshold(golden_max: float, best_ng: float) -> float | None:
     """Sit just under the best bad part, ignoring the golden floor.
+
+    The NG-only fallback, used when no known-good parts were supplied. Prefer
+    `suggest_in_gap` whenever a real `worst_ok` exists.
 
     Anchoring anywhere near `golden_max` is wrong, and wrongly in the
     dangerous direction. Golden photos are the cleanest parts there are, and
@@ -139,7 +182,9 @@ def tune(
     res = TuningResult(sku=sku, n_golden=len(golden_paths))
 
     ngs = ng_paths(sku)
+    oks = ok_paths(sku)
     res.n_ng = len(ngs)
+    res.n_ok = len(oks)
     if not ngs:
         res.reason = (
             f"No known-bad photos in `ng_images/{sku}/`. Both values need "
@@ -160,15 +205,21 @@ def tune(
     golden = [load_image(p) for p in golden_paths]
     names = [p.name for p in golden_paths]
     ng_images = [(p.name, load_image(p)) for p in ngs]
+    # Known-good parts are optional, and are scored exactly like the bad ones:
+    # as test parts against the fitted model, never as parts to fit on.
+    ok_images = [(p.name, load_image(p)) for p in oks]
+    labelled = ng_images + ok_images
     labels = {n: 1 for n, _ in ng_images}
+    labels.update({n: 0 for n, _ in ok_images})
 
     # Resolution first: the threshold is only meaningful at the resolution the
     # model is actually fitted at.
-    say(f"sweeping {len(candidates)} resolutions against {len(ngs)} bad part(s)")
+    say(f"sweeping {len(candidates)} resolutions against {len(ngs)} bad "
+        f"and {len(oks)} good part(s)")
     sized = []
     for size in candidates:
         sized.append(evaluate_size(sku, size, golden, names, rois, base_cfg,
-                                   ng_images, labels, say=say))
+                                   labelled, labels, say=say))
     res.sweep = sized
 
     def rank(r):
@@ -178,33 +229,73 @@ def tune(
     best = max(sized, key=rank)
     res.input_size = best.input_size
     res.golden_max = best.golden_max
+    res.worst_ok = best.worst_ok
     res.best_ng = best.best_ng
-    res.threshold = suggest_threshold(best.golden_max, best.best_ng)
+
+    # With real OK parts the floor is measured, so the threshold can sit in the
+    # gap. Without them `worst_ok` is just the golden set scoring near zero, and
+    # anchoring on it would put the threshold far below where good parts land.
+    validated = res.n_ok > 0
+    if validated:
+        res.threshold = suggest_in_gap(best.worst_ok, best.best_ng)
+    else:
+        res.threshold = suggest_threshold(best.golden_max, best.best_ng)
 
     if res.threshold is None:
+        floor = best.worst_ok if validated else best.golden_max
+        which = "good parts" if validated else "golden parts"
         res.reason = (
-            f"At input_size={best.input_size} the bad parts score "
-            f"{best.best_ng:.2f} and good parts up to {best.golden_max:.2f} — "
-            f"they overlap, so no threshold separates them. More golden "
-            f"images spanning the real lighting variation usually helps more "
-            f"than more resolution.")
+            f"At input_size={best.input_size} the weakest bad part scores "
+            f"{best.best_ng:.2f} and the worst of the {which} reaches "
+            f"{floor:.2f} — they overlap, so no threshold separates them.\n\n"
+            + ("Find the good part scoring highest and the bad part scoring "
+               "lowest and compare them: usually either a good part is "
+               "genuinely marked up, or a defect is too small for the check "
+               "box around it."
+               if validated else
+               "More golden images spanning the real lighting variation "
+               "usually helps more than more resolution."))
         return res
 
-    res.reason = (
-        f"Measured against **{res.n_ng}** known-bad and **{res.n_golden}** "
-        f"golden part(s).\n\n"
-        f"At `input_size={best.input_size}` the weakest bad part scores "
-        f"**{best.best_ng:.2f}**, so **{res.threshold:g}** sits just under it "
-        f"— high enough to pass everyday good parts, low enough to still "
-        f"catch every known-bad one.\n\n"
-        f"⚠️ **This is an upper bound, not a verified value.** Only bad parts "
-        f"were measured. Golden photos scored up to {best.golden_max:.2f}, "
-        f"but they are the cleanest parts you have — everyday good parts "
-        f"score several times higher, and nothing here knows how much. "
-        f"Inspect some known-good parts and check none of them lands above "
-        f"this number.\n\n"
-        f"The smallest check holds {best.min_patches} valid patches "
-        f"(target {TARGET_PATCHES}).")
+    if validated:
+        margin = (best.best_ng / best.worst_ok
+                  if best.worst_ok > 0 else float("inf"))
+        res.reason = (
+            f"Measured against **{res.n_ng}** known-bad, **{res.n_ok}** "
+            f"known-good and **{res.n_golden}** golden part(s).\n\n"
+            f"At `input_size={best.input_size}`:\n\n"
+            f"| | score |\n|---|---|\n"
+            f"| worst good part (must pass) | **{best.worst_ok:.2f}** |\n"
+            f"| weakest bad part (must fail) | **{best.best_ng:.2f}** |\n"
+            f"| separation | **{margin:.1f}x** |\n\n"
+            f"**{res.threshold:g}** sits inside that gap — above every good "
+            f"part measured, below every bad one. Both sides were measured on "
+            f"real parts, so this is a verified window rather than an "
+            f"estimate.\n\n"
+            f"The narrower the gap, the more a new part can drift before it "
+            f"lands on the wrong side of the line. More known-good parts "
+            f"spanning real lighting and handling variation is what tightens "
+            f"this.\n\n"
+            f"The smallest check holds {best.min_patches} valid patches "
+            f"(target {TARGET_PATCHES}).")
+    else:
+        res.reason = (
+            f"Measured against **{res.n_ng}** known-bad and **{res.n_golden}** "
+            f"golden part(s).\n\n"
+            f"At `input_size={best.input_size}` the weakest bad part scores "
+            f"**{best.best_ng:.2f}**, so **{res.threshold:g}** sits just under "
+            f"it — high enough to pass everyday good parts, low enough to "
+            f"still catch every known-bad one.\n\n"
+            f"⚠️ **This is an upper bound, not a verified value.** No "
+            f"known-good parts were supplied, so nothing here measured where "
+            f"good parts actually land. Golden photos scored up to "
+            f"{best.golden_max:.2f}, but the subspace is *fitted on* them — "
+            f"they score near zero by construction and everyday good parts "
+            f"score several times higher.\n\n"
+            f"**Upload known-good parts above and re-measure** to turn this "
+            f"into a measured window.\n\n"
+            f"The smallest check holds {best.min_patches} valid patches "
+            f"(target {TARGET_PATCHES}).")
     if best.min_patches < MIN_PATCHES:
         res.reason += (
             f"\n\n**Warning:** under {MIN_PATCHES} patches, the verdict rides "
@@ -217,13 +308,17 @@ def table(res: TuningResult) -> str:
     """The sweep as markdown, so the recommendation shows its working."""
     if not res.sweep:
         return ""
-    head = ("| input resolution | patches | worst golden | best bad | margin |\n"
-            "|---|---|---|---|---|\n")
+    head = ("| input resolution | patches | worst golden | worst good | "
+            "best bad | margin |\n|---|---|---|---|---|---|\n")
     rows = []
     for r in sorted(res.sweep, key=lambda r: r.input_size):
         margin = f"{r.margin:.1f}x" if np.isfinite(r.margin) else "—"
         best_ng = f"{r.best_ng:.2f}" if np.isfinite(r.best_ng) else "—"
+        # Only meaningful once real OK parts are in it; otherwise worst_ok is
+        # the golden set again and repeating it would imply a second reading.
+        worst_ok = (f"{r.worst_ok:.2f}"
+                    if res.n_ok > 0 and np.isfinite(r.worst_ok) else "—")
         mark = " ← chosen" if r.input_size == res.input_size else ""
         rows.append(f"| {r.input_size}{mark} | {r.min_patches} | "
-                    f"{r.golden_max:.2f} | {best_ng} | {margin} |")
+                    f"{r.golden_max:.2f} | {worst_ok} | {best_ng} | {margin} |")
     return head + "\n".join(rows)

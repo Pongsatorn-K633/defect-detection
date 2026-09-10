@@ -23,6 +23,12 @@ TEST_DIR = REPO_ROOT / "test_images"
 # known label, not parts being judged, and mixing the two made it unclear
 # which folder a photo belonged in.
 NG_DIR = REPO_ROOT / "ng_images"
+# Known-good parts, the counterpart to NG_DIR. Not the same thing as
+# GOLDEN_DIR: golden parts are what the subspace is *fitted on*, so they score
+# near zero by construction and say nothing about where everyday good parts
+# land. These are ordinary passing parts, scored like any test part, and they
+# are what gives the threshold a real floor instead of a fitted-on artifact.
+OK_DIR = REPO_ROOT / "ok_images"
 
 Backbone = Literal["vits14", "vitb14", "vitl14", "vitg14"]
 Segmenter = Literal["birefnet", "classical", "auto"]
