@@ -135,7 +135,18 @@
       "Bash(HF_HUB_OFFLINE=1 PYTHONIOENCODING=utf-8 python -c ' *)",
       "Bash(HF_HUB_OFFLINE=1 PYTHONIOENCODING=utf-8 timeout 180 python -c ' *)",
       "Bash(HF_HUB_OFFLINE=1 PYTHONIOENCODING=utf-8 timeout 240 python -c ' *)",
-      "Bash(HF_HUB_OFFLINE=1 PYTHONIOENCODING=utf-8 python -u \"C:/Users/user/AppData/Local/Temp/claude/c--Users-user-Documents-VScode-defect-detection/11befaa7-1b12-4e83-9fa0-f88ae200c24d/scratchpad/tune_80631.py\")"
+      "Bash(HF_HUB_OFFLINE=1 PYTHONIOENCODING=utf-8 python -u \"C:/Users/user/AppData/Local/Temp/claude/c--Users-user-Documents-VScode-defect-detection/11befaa7-1b12-4e83-9fa0-f88ae200c24d/scratchpad/tune_80631.py\")",
+      "Read(//c/Users/user/.cache/torch/hub/**)",
+      "Bash(python -c \"import ast;[ast.parse\\(open\\(f,encoding='utf-8'\\).read\\(\\)\\) for f in \\('inspector/features.py','inspector/segment.py'\\)];print\\('both parse OK'\\)\")",
+      "Bash(python \"C:/Users/user/AppData/Local/Temp/claude/c--Users-user-Documents-VScode-defect-detection/e43ab8c2-133d-4e06-a6f4-89cec541efff/scratchpad/bench.py\" --repeats 1 --max-images 1)",
+      "Bash(python \"C:/Users/user/AppData/Local/Temp/claude/c--Users-user-Documents-VScode-defect-detection/e43ab8c2-133d-4e06-a6f4-89cec541efff/scratchpad/bench_ssot.py\" --repeats 7 --out \"C:/Users/user/AppData/Local/Temp/claude/c--Users-user-Documents-VScode-defect-detection/e43ab8c2-133d-4e06-a6f4-89cec541efff/scratchpad/ssot.json\")",
+      "Bash(python \"C:/Users/user/AppData/Local/Temp/claude/c--Users-user-Documents-VScode-defect-detection/e43ab8c2-133d-4e06-a6f4-89cec541efff/scratchpad/ecc_probe.py\")",
+      "Bash(python \"C:/Users/user/AppData/Local/Temp/claude/c--Users-user-Documents-VScode-defect-detection/e43ab8c2-133d-4e06-a6f4-89cec541efff/scratchpad/bench_ssot.py\" --repeats 3 --out \"C:/Users/user/AppData/Local/Temp/claude/c--Users-user-Documents-VScode-defect-detection/e43ab8c2-133d-4e06-a6f4-89cec541efff/scratchpad/ssot2.json\")",
+      "Bash(timeout 1500 python -m experiments.exp1_alignment_repeatability --sku 8983864641)",
+      "Bash(python \"C:/Users/user/AppData/Local/Temp/claude/c--Users-user-Documents-VScode-defect-detection/e43ab8c2-133d-4e06-a6f4-89cec541efff/scratchpad/ecc_accuracy.py\" 8983864641)",
+      "Bash(grep -v \"Warning\\\\|warn\\\\|it/s\\\\]\\\\|^wrote\\\\|^Experiment\\\\|^segmenter\\\\|^image \\\\|^---\\\\|jpeg \\\\|jpg \\\\|^golden \\\\|^all valid\\\\|^Pass\\\\|^$\")",
+      "Bash(python \"C:/Users/user/AppData/Local/Temp/claude/c--Users-user-Documents-VScode-defect-detection/e43ab8c2-133d-4e06-a6f4-89cec541efff/scratchpad/ecc_accuracy.py\" 8983980631)",
+      "Bash(grep -v \"Warning\\\\|warn\\\\|it/s\\\\]\\\\|^wrote\\\\|^Experiment\\\\|^segmenter\\\\|^image \\\\|^---\\\\|jpeg \\\\|jpg \\\\|JPG \\\\|^golden \\\\|^all valid\\\\|^Pass\\\\|^$\")"
     ],
     "additionalDirectories": [
       "c:\\Users\\user\\Documents\\VScode\\defect-detection",

@@ -12,7 +12,9 @@ are not available offline.
 from __future__ import annotations
 
 import logging
+import os
 import threading
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -37,6 +39,18 @@ def _load_birefnet(cfg: SegmentConfig):
             return _MODEL_CACHE[key]
         import torch
         from transformers import AutoModelForImageSegmentation
+
+        # Once the weights are cached, `from_pretrained` still calls the Hub to
+        # check for a newer revision -- which costs a round-trip at every
+        # process start, warns about unauthenticated requests, and on a
+        # no-network machine waits for the timeout first. Default to offline
+        # when a cache exists; an explicit HF_HUB_OFFLINE in the environment
+        # still wins, so setting it to "0" restores update checks.
+        if "HF_HUB_OFFLINE" not in os.environ:
+            hf_home = Path(os.environ.get("HF_HOME",
+                                          Path.home() / ".cache" / "huggingface"))
+            if (hf_home / "hub").is_dir():
+                os.environ["HF_HUB_OFFLINE"] = "1"
 
         last_err: Exception | None = None
         for name in (cfg.birefnet_model, cfg.birefnet_fallback):

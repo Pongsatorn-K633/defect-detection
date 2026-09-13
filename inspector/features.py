@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -41,7 +42,23 @@ def load_backbone(cfg: FeatureConfig):
         import torch
 
         name = DINOV2_NAMES[cfg.backbone]
-        model = torch.hub.load(DINOV2_REPO, name, verbose=False)
+        # Prefer the already-cloned hub repo. `torch.hub.load` given a GitHub
+        # spec contacts github.com to resolve the repo *before* it touches the
+        # cached weights, so a machine holding everything on disk still waits
+        # on the network at every process start -- and when GitHub is
+        # unreachable it waits for the timeout before falling back. Pointing at
+        # the clone skips that; the fallback covers a first run, where there is
+        # no clone yet and fetching is the whole point.
+        repo_dir = Path(torch.hub.get_dir()) / "facebookresearch_dinov2_main"
+        try:
+            if not repo_dir.is_dir():
+                raise FileNotFoundError(repo_dir)
+            model = torch.hub.load(str(repo_dir), name, source="local",
+                                   verbose=False)
+        except Exception as exc:  # noqa: BLE001 - fall back to fetching it
+            log.info("Local hub repo unusable (%s); fetching %s",
+                     exc, DINOV2_REPO)
+            model = torch.hub.load(DINOV2_REPO, name, verbose=False)
         model.eval().to(device)
         for p in model.parameters():
             p.requires_grad_(False)
