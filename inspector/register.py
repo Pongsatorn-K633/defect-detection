@@ -14,6 +14,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from . import cancel
 from . import features as feat_mod
 from . import geometry as geom_mod
 from . import subspace as sub_mod
@@ -37,9 +38,16 @@ def register_sku(
     sources: list[str] | None = None,
     rois: list[ROI] | None = None,
     progress=None,
+    prepared=None,
 ) -> dict:
     """Fit the normal subspace for one SKU. No gradient training anywhere:
-    the resulting "model" is a mean vector and an eigenbasis."""
+    the resulting "model" is a mean vector and an eigenbasis.
+
+    `prepared` is a `build_reference` result to reuse. Segmentation and
+    alignment do not depend on the feature resolution, so a sweep over input
+    sizes does them once and passes them in, instead of re-segmenting every
+    golden photo (twice, for the reference refinement) at every size.
+    """
     t0 = time.time()
     sources = sources or [f"image_{i}" for i in range(len(images))]
 
@@ -48,8 +56,10 @@ def register_sku(
         if progress:
             progress(msg)
 
-    say(f"preprocessing {len(images)} golden images")
-    ref_stats, ref_img, ref_mask, results = build_reference(images, cfg, sources)
+    if prepared is None:
+        say(f"preprocessing {len(images)} golden images")
+        prepared = build_reference(images, cfg, sources)
+    ref_stats, ref_img, ref_mask, results = prepared
     canvas = tuple(ref_stats["canvas_size"])
 
     posed = [r for r in results if r.info.get("pose_rejected")]
@@ -74,6 +84,7 @@ def register_sku(
     say(f"extracting DINOv2 {cfg.features.backbone} features")
     fmaps, vgrids = [], []
     for r in usable:
+        cancel.check()                    # features are the other slow step
         f = feat_mod.extract_patch_features(r.aligned_image, cfg.features)
         gh, gw = f.shape[:2]
         fmaps.append(f)
@@ -136,27 +147,36 @@ def register_sku(
 
     # Golden score distribution: what "normal" looks like on this SKU, which
     # is what any sensible threshold has to be set against.
+    # One score map per golden photo, shared by every check and the whole
+    # part: it does not depend on the ROI, and recomputing it per ROI cost
+    # (checks + 1) full Mahalanobis passes per photo.
+    score_maps = []
+    for f in fmaps:
+        cancel.check()
+        score_maps.append(
+            sub_mod.score_maps(f, model, cfg.subspace, pos_stats)["score"])
+
     golden_scores = {}
     eff_rois = rois or []
     for roi in eff_rois:
         if roi.type != "appearance":
             continue
+        gy0, gy1, gx0, gx1 = patch_grid_box(roi.box, canvas, grid_h, grid_w)
         vals = []
-        for f, v in zip(fmaps, vgrids):
-            maps = sub_mod.score_maps(f, model, cfg.subspace, pos_stats)
-            gy0, gy1, gx0, gx1 = patch_grid_box(roi.box, canvas, grid_h, grid_w)
-            sub = maps["score"][gy0:gy1, gx0:gx1]
+        for s, v in zip(score_maps, vgrids):
             vsub = v[gy0:gy1, gx0:gx1]
             if vsub.any():
-                vals.append(sub_mod.aggregate(sub, vsub, cfg.subspace.aggregation))
+                vals.append(sub_mod.aggregate(s[gy0:gy1, gx0:gx1], vsub,
+                                              cfg.subspace.aggregation))
         golden_scores[roi.id] = vals
 
-    whole = []
-    for f, v in zip(fmaps, vgrids):
-        maps = sub_mod.score_maps(f, model, cfg.subspace, pos_stats)
-        whole.append(sub_mod.aggregate(maps["score"], v, cfg.subspace.aggregation))
-    golden_scores["whole_part"] = whole
+    golden_scores["whole_part"] = [
+        sub_mod.aggregate(s, v, cfg.subspace.aggregation)
+        for s, v in zip(score_maps, vgrids)]
 
+    # Last chance: a cancel during the subspace fit is honoured here, before
+    # the caller gets a model it would save.
+    cancel.check()
     elapsed = time.time() - t0
     say(f"registration finished in {elapsed:.1f}s")
 
@@ -170,6 +190,9 @@ def register_sku(
         "canvas_size": canvas,
         "grid": (grid_h, grid_w),
         "results": usable,
+        # Features of `results`, in the same order, for callers that score the
+        # golden parts again (the resolution sweep). Not saved to disk.
+        "golden_features": list(zip(fmaps, vgrids)),
         "n_valid_patches": int(len(stacked)),
         "per_image_patches": counts,
         "geometry_nominals": geom_nominals,

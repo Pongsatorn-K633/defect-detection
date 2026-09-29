@@ -16,6 +16,7 @@ import logging
 
 import numpy as np
 
+from . import cancel
 from .config import SubspaceConfig
 
 log = logging.getLogger(__name__)
@@ -37,11 +38,24 @@ def fit_subspace(features: np.ndarray, tau: float = 0.97,
     mu = features.mean(axis=0)
     centered = features - mu
 
-    # SVD of the centered data rather than an explicit DxD covariance: D is
-    # 1024-1536 here and N can be smaller than D, so the economy SVD is both
-    # cheaper and better conditioned.
-    _, s, vt = np.linalg.svd(centered, full_matrices=False)
-    eigenvalues = (s ** 2) / max(n - 1, 1)
+    if n > d:
+        # More patches than dimensions -- every real fit: 3,000-15,000
+        # patches of 1024-D. Eigendecompose the DxD covariance. The SVD of
+        # the N x D data gives the same components but also builds an N x D
+        # U that is thrown away, and took 60% of a fit's time -- 1.7 s per
+        # call, six calls per fit with the outlier screen, on CPU. Float64
+        # keeps the squared conditioning harmless for the components kept.
+        cov = centered.astype(np.float64)
+        cov = (cov.T @ cov) / max(n - 1, 1)
+        eigenvalues, vecs = np.linalg.eigh(cov)
+        order = np.argsort(eigenvalues)[::-1]
+        eigenvalues = np.clip(eigenvalues[order], 0.0, None)
+        vt = vecs[:, order].T
+    else:
+        # Fewer patches than dimensions: the economy SVD is cheaper here and
+        # better conditioned.
+        _, s, vt = np.linalg.svd(centered, full_matrices=False)
+        eigenvalues = (s ** 2) / max(n - 1, 1)
 
     total = eigenvalues.sum()
     if total <= 0:
@@ -203,6 +217,7 @@ def leave_one_out_screen(per_image_features: list[np.ndarray],
 
     scores = []
     for i in range(k):
+        cancel.check()             # each held-out refit takes seconds
         others = np.concatenate([f for j, f in enumerate(per_image_features)
                                  if j != i], axis=0)
         try:

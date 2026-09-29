@@ -5,7 +5,7 @@
     1250
   ],
   "ref_area_px": 553869.0,
-  "threshold": 6.0,
+  "threshold": 215.9,
   "rois": [
     {
       "id": "check_1",
@@ -14,7 +14,7 @@
         158,
         106,
         380,
-        1048
+        1050
       ]
     },
     {
@@ -24,7 +24,7 @@
         158,
         106,
         380,
-        1048
+        1050
       ],
       "tolerance": {
         "area_pct": 10.0,
@@ -33,5 +33,7 @@
       }
     }
   ],
-  "input_size": 672
+  "input_size": 672,
+  "threshold_worst_ok": 91.53368377685547,
+  "threshold_best_ng": 509.3396911621094
 }

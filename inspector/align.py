@@ -6,7 +6,7 @@ patch cell and the residual explodes on a perfectly good part.
 
 The transform chain is:
     similarity from mask moments (translation + rotation + scale)
-      -> quarter-turn axis disambiguation against the reference mask
+      -> full-circle rotation search against the reference mask
       -> optional ECC homography refinement to absorb mild out-of-plane tilt
 """
 from __future__ import annotations
@@ -129,6 +129,23 @@ def _warp_mask(mask, M, canvas_size) -> np.ndarray:
     return cv2.warpPerspective(mask, M, (cw, ch), flags=cv2.INTER_NEAREST)
 
 
+def outline(mask: np.ndarray) -> np.ndarray:
+    """The mask with every hole filled: the part's outer silhouette only.
+
+    Pose is decided on this, never on the raw mask. Whether segmentation
+    reports a through-hole as a hole is not stable: BiRefNet left a bracket's
+    window open in one photo and filled it in the same photo turned 90
+    degrees (mask IoU between the two only 0.75). The outer outline is what a
+    pose actually changes, and it survives that disagreement.
+    """
+    binary = (mask > 0).astype(np.uint8)
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL,
+                                   cv2.CHAIN_APPROX_SIMPLE)
+    filled = np.zeros_like(binary)
+    cv2.drawContours(filled, contours, -1, 1, thickness=cv2.FILLED)
+    return filled * 255
+
+
 def _iou(a: np.ndarray, b: np.ndarray) -> float:
     a_b = a > 0
     b_b = b > 0
@@ -138,28 +155,54 @@ def _iou(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.logical_and(a_b, b_b).sum()) / float(union)
 
 
-def resolve_axis_ambiguity(mask, angle, ref_mask, ref_stats) -> float:
-    """The principal axis is ambiguous; pick the orientation that fits best.
+def search_rotation(mask, angle, ref_mask, ref_stats,
+                    coarse_deg=5.0, fine_deg=1.0) -> tuple[float, float]:
+    """Find the rotation whose outline best matches the reference.
 
-    All four quarter turns are warped and scored by IoU against the reference
-    mask. The axis is always 180-degree ambiguous -- without that check the
-    part flips upside down about half the time -- and on a near-square part it
-    is 90-degree ambiguous too: which axis comes out "principal" swaps as the
-    part rotates. SKU 898213-8740's bracket, turned 30-45 degrees on the
-    table, aligned a quarter turn off (IoU 0.47-0.49 against 0.94-0.97 for the
-    same part square-on) when only 0 and 180 were tried.
+    Scores the whole circle, then refines around the winner, by IoU against
+    the reference mask. It does not trust the moment angle, which is only as
+    reliable as the part is elongated: it is always 180-degree ambiguous (the
+    part would flip upside down half the time), and on a square or round part
+    the axis itself is arbitrary. Checking only the moment angle and its
+    flips, or a window around it, fails exactly on those parts -- a near-square
+    bracket photographed flat came out a few degrees off, far enough that ECC
+    then rejected its own refinement. A full search makes no assumption about
+    the shape or how the part was turned on the table.
+
+    One scale for every candidate: the geometric-mean extent barely moves with
+    rotation, and the caller recomputes it exactly for the winning angle.
+    Recomputing per candidate took percentiles over every pixel of a 12 MP
+    mask each time. `angle` only seeds the grid, so the moment direction is
+    always among the candidates.
     """
     mom = mask_moments(mask)
     canvas = ref_stats["canvas_size"]
+    scale = _scale_for(mask, ref_stats, mom["centroid"], angle)
+    # Scored on outer outlines, so a hole segmented in one photo and filled
+    # in the other cannot decide the rotation.
+    shape = outline(mask)
+    # Scored on a canvas at most 640 px across: a 1-degree decision needs no
+    # more, and 83 warps + IoUs at full canvas size were 0.4 s of every
+    # inspection. The caller's quality check still runs at full resolution.
+    k = min(1.0, 640.0 / max(canvas))
+    small = (max(1, int(round(canvas[0] * k))), max(1, int(round(canvas[1] * k))))
+    ref_shape = cv2.resize(outline(ref_mask), small,
+                           interpolation=cv2.INTER_NEAREST)
 
-    best_angle, best_iou = angle, -1.0
-    for cand in (angle + k * np.pi / 2.0 for k in range(4)):
-        scale = _scale_for(mask, ref_stats, mom["centroid"], cand)
-        M = _similarity(mom["centroid"], cand, scale, canvas)
-        iou = _iou(_warp_mask(mask, M, canvas), ref_mask)
-        if iou > best_iou:
-            best_iou, best_angle = iou, cand
-    return float(best_angle), float(best_iou)
+    def score(a):
+        M = _similarity(mom["centroid"], a, scale * k, small)
+        return _iou(_warp_mask(shape, M, small), ref_shape)
+
+    def best_of(cands):
+        return max(((score(a), a) for a in cands), key=lambda t: t[0])
+
+    step = np.radians(coarse_deg)
+    iou, best = best_of(angle + k * step
+                        for k in range(int(round(360.0 / coarse_deg))))
+    fine = np.radians(fine_deg)
+    n = int(round(coarse_deg / fine_deg))
+    iou, best = best_of(best + k * fine for k in range(-n, n + 1))
+    return float(best), float(iou)
 
 
 def _robust_extent(mask, centroid, angle, pct=98.0):
@@ -200,14 +243,14 @@ def _scale_for(mask, ref_stats, centroid, angle):
 
 
 def similarity_to_canonical(mask, ref_stats, ref_mask=None):
-    """Full similarity step: moments, then flip disambiguation if we have a
-    reference mask to compare against."""
+    """Full similarity step: moments, then a full rotation search when there
+    is a reference mask to compare against."""
     mom = mask_moments(mask)
     canvas = ref_stats["canvas_size"]
     angle = mom["angle"]
     iou = None
     if ref_mask is not None:
-        angle, iou = resolve_axis_ambiguity(mask, angle, ref_mask, ref_stats)
+        angle, iou = search_rotation(mask, angle, ref_mask, ref_stats)
     scale = _scale_for(mask, ref_stats, mom["centroid"], angle)
     M = _similarity(mom["centroid"], angle, scale, canvas)
     return M, {"angle": angle, "scale": scale, "flip_iou": iou,
@@ -254,7 +297,9 @@ def refine_homography(warped_img, ref_img, warped_mask, ref_mask, cfg: AlignConf
         # A signed distance transform gives the optimiser a smooth basin
         # around the true outline instead of a binary cliff. The whole canvas
         # participates here, so no ECC mask is supplied.
-        g1, g2 = _signed_dt(ref_mask), _signed_dt(warped_mask)
+        # Outer outlines: a hole present in one mask and filled in the other
+        # would otherwise pull ECC towards matching the hole.
+        g1, g2 = _signed_dt(outline(ref_mask)), _signed_dt(outline(warped_mask))
         ecc_mask = None
     else:
         g1 = cv2.cvtColor(ref_img, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
@@ -309,8 +354,12 @@ def warp_image(image, M, canvas_size, nearest=False):
 
 
 def alignment_quality(warped_mask: np.ndarray, ref_mask: np.ndarray) -> dict:
-    """IoU and centroid drift against the reference -- the Experiment 1 metrics."""
-    iou = _iou(warped_mask, ref_mask)
+    """IoU and centroid drift against the reference -- the Experiment 1 metrics.
+
+    IoU is of the outer outlines: it gates whether the part is lying as the
+    golden parts did, and a hole segmented differently is not a pose.
+    """
+    iou = _iou(outline(warped_mask), outline(ref_mask))
     try:
         a = mask_moments(warped_mask)["centroid"]
         b = mask_moments(ref_mask)["centroid"]

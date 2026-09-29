@@ -24,6 +24,7 @@ toward the NG side rather than splitting the gap evenly.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -33,14 +34,11 @@ from . import features as feat_mod
 from . import subspace as sub_mod
 from .autosize import COARSE, MIN_PATCHES, TARGET_PATCHES, evaluate_size
 from .config import NG_DIR, OK_DIR, PipelineConfig
-from .pipeline import load_image, preprocess
+from .pipeline import IMAGE_SUFFIXES, build_reference, load_image, preprocess
 from .register import register_sku
 from .roi import ROI, SKUConfig, patch_grid_box
 
 log = logging.getLogger(__name__)
-
-
-IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp"}
 
 
 def _labelled_paths(folder: Path) -> list[Path]:
@@ -214,12 +212,30 @@ def tune(
 
     # Resolution first: the threshold is only meaningful at the resolution the
     # model is actually fitted at.
+    # Segment and align every photo once. None of it depends on the feature
+    # resolution, and repeating it per size was most of the time: 3 sizes
+    # re-segmented each golden photo 6 times and each labelled photo 3 times.
+    say(f"finding and aligning the part in {len(golden) + len(labelled)} "
+        f"photos (once, for every resolution)")
+    t0 = time.time()
+    prepared = build_reference(golden, base_cfg, names)
+    say(f"golden photos aligned in {time.time() - t0:.1f} s")
+    ref_stats, ref_image, ref_mask, _ = prepared
+    test_pre = {}
+    for n, img in labelled:
+        t1 = time.time()
+        test_pre[n] = preprocess(img, base_cfg, ref_stats=ref_stats,
+                                 ref_mask=ref_mask, ref_image=ref_image,
+                                 source=n)
+        say(f"aligned {n} in {time.time() - t1:.1f} s")
+
     say(f"sweeping {len(candidates)} resolutions against {len(ngs)} bad "
         f"and {len(oks)} good part(s)")
     sized = []
     for size in candidates:
         sized.append(evaluate_size(sku, size, golden, names, rois, base_cfg,
-                                   labelled, labels, say=say))
+                                   labelled, labels, say=say,
+                                   prepared=prepared, test_pre=test_pre))
     res.sweep = sized
 
     def rank(r):

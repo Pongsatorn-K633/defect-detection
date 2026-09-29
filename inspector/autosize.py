@@ -34,6 +34,7 @@ from pathlib import Path
 
 import numpy as np
 
+from . import cancel
 from . import features as feat_mod
 from . import subspace as sub_mod
 from .config import DATA_DIR, TEST_DIR, PipelineConfig
@@ -134,12 +135,15 @@ def _appearance_rois(rois: list[ROI]) -> list[ROI]:
     return [r for r in rois if r.type == "appearance"]
 
 
-def _roi_scores(fmap, valid, model, cfg, pos_stats, roi, canvas):
-    """Aggregate one ROI on one image, or NaN if it holds no valid patch."""
-    gh, gw = fmap.shape[:2]
+def _roi_scores(score, valid, cfg, roi, canvas):
+    """Aggregate one ROI of an image's score map, or NaN if no valid patch.
+
+    Takes the finished map: it does not depend on the ROI, and computing it
+    here meant one full Mahalanobis pass per ROI per image.
+    """
+    gh, gw = score.shape[:2]
     gy0, gy1, gx0, gx1 = patch_grid_box(roi.box, canvas, gh, gw)
-    maps = sub_mod.score_maps(fmap, model, cfg.subspace, pos_stats)
-    sub = maps["score"][gy0:gy1, gx0:gx1]
+    sub = score[gy0:gy1, gx0:gx1]
     vsub = valid[gy0:gy1, gx0:gx1]
     if not vsub.any():
         return float("nan"), 0
@@ -157,12 +161,19 @@ def evaluate_size(
     test: list[tuple[str, np.ndarray]] | None = None,
     labels: dict[str, int] | None = None,
     say=None,
+    prepared=None,
+    test_pre: dict | None = None,
 ) -> SizeResult:
     """Fit at `size` and measure what it achieves.
 
-    A full refit per candidate is unavoidable: the patch grid changes with the
+    A refit per candidate is unavoidable: the patch grid changes with the
     resolution, so the subspace and the position statistics are only valid at
-    the size they were fitted at.
+    the size they were fitted at. Segmentation and alignment are not -- they
+    never look at the feature resolution -- so a sweep passes them in once:
+    `prepared` for the golden set (a `build_reference` result) and `test_pre`
+    (name -> PreprocessResult against that same reference) for the labelled
+    parts. Without them every size re-segmented every photo, which was most
+    of a 6-minute measurement.
     """
     import copy
 
@@ -172,7 +183,11 @@ def evaluate_size(
         say(f"fitting at input_size={size}")
 
     t0 = time.time()
-    reg = register_sku(sku, golden, cfg, golden_names, rois)
+    reg = register_sku(sku, golden, cfg, golden_names, rois,
+                       prepared=prepared)
+    if say:
+        say(f"fit at input_size={size} took {time.time() - t0:.1f} s; "
+            f"scoring the labelled parts")
     res = SizeResult(input_size=int(size), grid=tuple(reg["grid"]),
                      fit_seconds=time.time() - t0)
 
@@ -185,14 +200,14 @@ def evaluate_size(
     # Golden side: patch counts and the normal score ceiling.
     golden_vals: list[float] = []
     counts: dict[str, list[int]] = {r.id: [] for r in checked}
-    for pre in reg["results"]:
-        fmap = feat_mod.extract_patch_features(pre.aligned_image, cfg.features)
-        valid = feat_mod.patch_mask_from_pixel_mask(
-            pre.aligned_valid_mask, fmap.shape[0], fmap.shape[1],
-            cfg.features.patch_coverage)
+    # The fit just extracted these features for the same photos at the same
+    # size; extracting them a second time bought nothing.
+    for fmap, valid in reg["golden_features"]:
+        cancel.check()
+        score = sub_mod.score_maps(fmap, reg["model"], cfg.subspace,
+                                   reg["position_stats"])["score"]
         for roi in checked:
-            s, n = _roi_scores(fmap, valid, reg["model"], cfg,
-                               reg["position_stats"], roi, canvas)
+            s, n = _roi_scores(score, valid, cfg, roi, canvas)
             counts[roi.id].append(n)
             if np.isfinite(s):
                 golden_vals.append(s)
@@ -206,20 +221,24 @@ def evaluate_size(
     # Test side: the worst part that must pass, and the best that must fail.
     ok_vals, ng_vals = [], []
     for name, img in test:
+        cancel.check()                    # features at this size, per photo
         y = labels.get(name)
         if y is None:
             continue
-        pre = preprocess(img, cfg, ref_stats=reg["ref_stats"],
-                         ref_mask=reg["ref_mask"], ref_image=reg["ref_image"],
-                         source=name)
+        pre = (test_pre or {}).get(name)
+        if pre is None:
+            pre = preprocess(img, cfg, ref_stats=reg["ref_stats"],
+                             ref_mask=reg["ref_mask"],
+                             ref_image=reg["ref_image"], source=name)
         if not pre.ok:
             continue                  # RETAKE says nothing about the part
         fmap = feat_mod.extract_patch_features(pre.aligned_image, cfg.features)
         valid = feat_mod.patch_mask_from_pixel_mask(
             pre.aligned_valid_mask, fmap.shape[0], fmap.shape[1],
             cfg.features.patch_coverage)
-        per_roi = [_roi_scores(fmap, valid, reg["model"], cfg,
-                               reg["position_stats"], roi, canvas)[0]
+        score = sub_mod.score_maps(fmap, reg["model"], cfg.subspace,
+                                   reg["position_stats"])["score"]
+        per_roi = [_roi_scores(score, valid, cfg, roi, canvas)[0]
                    for roi in checked]
         per_roi = [v for v in per_roi if np.isfinite(v)]
         if not per_roi:

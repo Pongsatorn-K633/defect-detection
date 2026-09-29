@@ -10,8 +10,10 @@ final answer was.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -20,7 +22,7 @@ import cv2
 import gradio as gr
 import numpy as np
 
-from inspector import autosize
+from inspector import autosize, cancel
 from inspector import metrics as met
 from inspector import metricsviz as mviz
 from inspector import subspace as sub_mod
@@ -124,22 +126,42 @@ _HEIF = {".heic", ".heif"}
 _PREVIEW_SRC: dict[str, str] = {}
 
 
+# Gallery thumbnails are at most this many pixels on the long side. The
+# galleries used to be handed the photos themselves -- 5-6 MB, 12 MP from a
+# phone -- and every tick or Next re-sent the whole gallery to the browser,
+# which made a 2.4 s inspection take 3-10 s from click to result.
+THUMB_SIDE = 640
+
+
 def _viewable(paths) -> list[str]:
-    """Paths a browser can display: HEIC swapped for a cached JPEG preview."""
-    return [_heif_preview(str(p)) if Path(str(p)).suffix.lower() in _HEIF
-            else str(p) for p in (paths or [])]
+    """Paths a gallery should show: small cached JPEG thumbnails.
+
+    HEIC always gets one (browsers cannot display it); any other photo gets
+    one when it is larger than THUMB_SIDE. Everything that inspects or saves
+    maps a thumbnail back to its photo through `_original`.
+    """
+    return [_preview(str(p)) for p in (paths or [])]
 
 
-def _heif_preview(path: str) -> str:
+def _preview(path: str) -> str:
     src = Path(path)
     try:
         st = src.stat()
     except OSError:
         return path
+    heif = src.suffix.lower() in _HEIF
+    if not heif:
+        try:
+            from PIL import Image
+            with Image.open(src) as im:      # reads the header only
+                if max(im.size) <= THUMB_SIDE:
+                    return path              # already small: show as is
+        except Exception:  # noqa: BLE001 - not an image PIL knows; leave it
+            return path
     import hashlib
 
     # Keyed on the file's identity and version, so an edited photo never
-    # shows a stale preview and two photos with one name never collide.
+    # shows a stale thumbnail and two photos with one name never collide.
     key = hashlib.sha1(f"{src.resolve()}|{st.st_size}|{st.st_mtime_ns}"
                        .encode()).hexdigest()[:12]
     dest = PREVIEW_DIR / f"{src.stem}.{key}.preview.jpg"
@@ -148,8 +170,12 @@ def _heif_preview(path: str) -> str:
             img = load_image(src)          # upright, same as the pipeline sees
         except ValueError:
             return path
+        s = THUMB_SIDE / max(img.shape[:2])
+        if s < 1:
+            img = cv2.resize(img, None, fx=s, fy=s,
+                             interpolation=cv2.INTER_AREA)
         PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
-        ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])
         if not ok:
             return path
         buf.tofile(str(dest))              # unicode-safe on Windows
@@ -308,17 +334,26 @@ def do_fit(files, backbone, input_size, tau, aggregation, position_norm,
         fit_rois = []
 
     try:
-        images = [load_image(p) for p in paths]
-        t0 = time.time()
-        reg = register_sku(sku or "demo", images, cfg,
-                           [Path(p).name for p in paths], fit_rois,
-                           progress=say)
-        fit_s = time.time() - t0
-        saved_to = None
-        if sku:
-            # save_registration keeps the ROIs, threshold and input_size that
-            # are already on disk; only canvas geometry comes from the fit.
-            saved_to = save_registration(reg)
+        with cancel.cancellable():
+            images = [load_image(p) for p in paths]
+            t0 = time.time()
+            reg = register_sku(sku or "demo", images, cfg,
+                               [Path(p).name for p in paths], fit_rois,
+                               progress=say)
+            fit_s = time.time() - t0
+            saved_to = None
+            if sku:
+                # The last point a cancel is honoured: past here the fit is
+                # written, and a half-cancelled fit must never be saved.
+                cancel.check()
+                # save_registration keeps the ROIs, threshold and input_size
+                # already on disk; only canvas geometry comes from the fit.
+                saved_to = save_registration(reg)
+    except cancel.Cancelled:
+        return (state, "Fit cancelled — nothing was saved. The previous "
+                       "model for this part is unchanged.",
+                gr.update(), gr.update(), gr.update(), gr.update(),
+                gr.update())
     except Exception as exc:  # noqa: BLE001 - surface the real cause in the UI
         log.exception("fit failed")
         return (state, f"Fit failed: {exc}\n\n{traceback.format_exc()[-800:]}",
@@ -396,6 +431,101 @@ def do_fit(files, backbone, input_size, tau, aggregation, position_norm,
     draft = state.get("draft_rois", [])
     return (state, status, _roi_canvas(reg, draft), _to_rgb(sheet), stats,
             gr.update(value=default_roi), _roi_rows(draft))
+
+
+def _saved_when(path: Path) -> str:
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(path.stat().st_mtime))
+
+
+def saved_fit_status(sku):
+    """Status and statistics of the part's saved model, for the fit panel.
+
+    Shown on selecting a part, so a part fitted in an earlier session does
+    not look unfitted. Also compares the model with the golden folder: a
+    photo added or removed since means the model no longer matches it.
+    """
+    if not sku:
+        return "", ""
+    path = MODEL_DIR / sku / "model.npz"
+    if not path.exists():
+        return ("No saved model for this part yet — add golden photos above "
+                "and press Fit subspace."), ""
+    try:
+        reg = load_registration(sku)
+    except Exception as exc:  # noqa: BLE001 - say so rather than crash the page
+        return f"Saved model could not be read: {exc}", ""
+
+    # Compared on the name without extension: a HEIC fitted straight from an
+    # upload is saved into the folder as .jpg.
+    used = {Path(s).stem: s for s in reg["sources"]}
+    folder = {Path(p).stem: Path(p).name
+              for p in load_examples(sku, "golden")}
+    lines = [f"Saved model found — fitted {_saved_when(path)} on "
+             f"{len(used)} golden photo(s): {', '.join(reg['sources'])}."]
+    extra = sorted(folder[k] for k in folder.keys() - used.keys())
+    gone = sorted(used[k] for k in used.keys() - folder.keys())
+    if extra:
+        lines.append(f"In the folder but not in the model: {', '.join(extra)} "
+                     f"— added since the fit, or left out by it (not lying "
+                     f"flat, or an outlier). Fit again after adding photos.")
+    if gone:
+        lines.append(f"In the model but no longer in the folder: "
+                     f"{', '.join(gone)} — fit again so the model matches.")
+    if reg.get("golden_masks") is None:
+        lines.append("Fitted before outlines were saved — fit once more so "
+                     "boxes can be changed later without re-fitting.")
+    if not (extra or gone):
+        lines.append("Matches the golden folder. Fit again only after adding "
+                     "or removing golden photos.")
+
+    gs = reg["golden_scores"].get("whole_part", [])
+    canvas = reg["canvas_size"]
+    stats = "\n".join([
+        f"Reference images    {len(used)}",
+        f"Input resolution    {reg['config'].features.input_size}",
+        f"Canonical canvas    {canvas[0]} x {canvas[1]}",
+        f"Patch grid          {reg['grid'][0]} x {reg['grid'][1]}",
+        f"Valid patches (fit) {reg['n_valid_patches']}",
+        f"Retained components r = {reg['model']['r']}",
+        f"Golden whole-part   min {min(gs):.2f}  max {max(gs):.2f}"
+        if gs else "",
+    ])
+    return "\n".join(lines), stats
+
+
+def saved_checks_status(sku) -> str:
+    """What the part's saved sku.json holds, for beside Save sku.json."""
+    if not sku:
+        return ""
+    path = MODEL_DIR / sku / "sku.json"
+    if not path.exists():
+        return "*No checks saved for this part yet.*"
+    try:
+        cfg = SKUConfig.load(sku)
+    except Exception as exc:  # noqa: BLE001
+        return f"Saved `sku.json` could not be read: {exc}"
+    thr = f"{cfg.threshold:g}" + ("" if cfg.threshold_measured
+                                  else " (not measured yet — step 3)")
+    size = cfg.input_size or PipelineConfig().features.input_size
+    msg = (f"**Saved `sku.json`** — {_saved_when(path)}: "
+           f"{len(group_checks(cfg.rois))} check(s), threshold {thr}, "
+           f"input resolution {size}.")
+    geo = [r for r in cfg.rois if r.type == "geometry"]
+    if geo:
+        try:
+            nominals = load_registration(sku)["geometry_nominals"]
+        except (FileNotFoundError, KeyError):
+            nominals = {}
+        # Measured means a nominal exists for this exact box; an old one
+        # without a recorded box is trusted, as inspection trusts it.
+        unmeasured = [r.id for r in geo if r.id not in nominals or (
+            nominals[r.id].get("box") is not None
+            and list(nominals[r.id]["box"]) != list(r.box))]
+        msg += (" Shape checks: all measured." if not unmeasured else
+                f" Shape checks **not measured** for "
+                f"{', '.join(f'`{u}`' for u in unmeasured)} — press "
+                f"**Save sku.json** (or Fit subspace) to measure them.")
+    return msg
 
 
 def scope_note(roi_mode) -> str:
@@ -863,6 +993,40 @@ def _ok_list(sku):
     return _labelled_list(OK_DIR, sku)
 
 
+def _paths(files) -> list[str]:
+    """File-box value -> plain paths (Gradio hands back str or objects)."""
+    return [f if isinstance(f, str) else f.name for f in (files or [])]
+
+
+def _add_drops(held, dropped):
+    """Append a drop to the hidden list and empty the drop area.
+
+    Returns the new list and None for the drop box. A photo whose name is
+    already listed is skipped, so dropping the same file twice cannot put it
+    into a fit twice.
+    """
+    paths = _paths(held)
+    names = {Path(p).name for p in paths}
+    for p in _paths(dropped):
+        if Path(p).name not in names:
+            paths.append(p)
+            names.add(Path(p).name)
+    return (paths or None), None
+
+
+def _saved_plus(saved, pending) -> list[str]:
+    """The saved set, then any dropped photos not saved yet."""
+    have = {Path(p).name for p in saved}
+    extra = []
+    for p in _paths(pending):
+        # A HEIC is saved as .jpg, so compare on the saved name too.
+        saved_name = Path(p).stem + (".jpg" if Path(p).suffix.lower() in _HEIF
+                                     else Path(p).suffix)
+        if Path(p).name not in have and saved_name not in have:
+            extra.append(p)
+    return list(saved) + extra
+
+
 def _ng_view(sku):
     return _viewable(_ng_list(sku))
 
@@ -1038,6 +1202,14 @@ def _fmt_duration(seconds: float) -> str:
     return f"{minutes} min {secs:02d} s"
 
 
+def do_cancel():
+    """Ask the running fit or measurement to stop before it saves anything."""
+    if cancel.request():
+        return ("Cancelling — stops after the current photo. Nothing will be "
+                "saved.")
+    return "Nothing is running."
+
+
 def do_tune(files, sku, state, progress=gr.Progress()):
     """Measure input_size and the threshold from the NG set.
 
@@ -1067,10 +1239,39 @@ def do_tune(files, sku, state, progress=gr.Progress()):
     # Measuring refits at every candidate resolution, so it runs for minutes.
     # Reporting how long it took -- on the failure path too -- is the
     # difference between "that was slow" and "that hung".
+    # The bar used to sit at a fixed 50% for the whole run. Aligning is the
+    # first ~10%, then each resolution takes an equal share, and the label
+    # says which of the three is running.
+    sizes = list(tuning.COARSE)
+    t_start = time.time()
+
+    def say(msg):
+        # Timestamped in the terminal too, so a slow run shows where the time
+        # went rather than only how long it took in total.
+        print(f"[measure {time.time() - t_start:7.1f}s] {msg}", flush=True)
+        m = re.search(r"input_size=(\d+)", msg)
+        if m and int(m.group(1)) in sizes:
+            i = sizes.index(int(m.group(1)))
+            progress(0.1 + 0.9 * i / len(sizes),
+                     desc=f"resolution {i + 1} of {len(sizes)} "
+                          f"({m.group(1)}) — fitting and scoring")
+        elif msg.startswith("finding and aligning"):
+            progress(0.02, desc=msg)
+        # Other messages come from inside a fit; the stage label stays.
+
     t0 = time.time()
     try:
-        res = tuning.tune(sku, paths, rois,
-                          say=lambda m: progress(0.5, desc=m))
+        with cancel.cancellable():
+            res = tuning.tune(sku, paths, rois, say=say)
+            # A cancel that arrived after the last checkpoint must still win:
+            # the operator asked to stop, so no result is shown.
+            cancel.check()
+    except cancel.Cancelled:
+        # Measuring never writes anything; cancelling also leaves the two
+        # boxes and the remembered window as they were.
+        return (gr.update(), gr.update(),
+                f"Measuring cancelled after "
+                f"{_fmt_duration(time.time() - t0)} — nothing was changed.")
     except Exception as exc:  # noqa: BLE001 - surface the real cause
         log.exception("tuning failed")
         return (gr.update(), gr.update(),
@@ -1384,6 +1585,28 @@ def _score_cell(r, with_limit: bool) -> str:
         else f"{r.score:.2f}"
 
 
+def do_test_save(test_file, sku):
+    """Keep the photo being inspected: copy it into test_images/<sku>/."""
+    if not sku:
+        return "Select a part first."
+    if test_file is None:
+        return "Upload a photo in **part to inspect** first."
+    src = Path(_original(test_file if isinstance(test_file, str)
+                         else test_file.name))
+    if not src.exists():
+        return "That photo is no longer available — upload it again."
+    if src.parent.resolve() == (TEST_DIR / sku).resolve():
+        return f"`{src.name}` is already in `test_images/{sku}/`."
+    try:
+        target, status = _store_photo(src, TEST_DIR / sku)
+    except ValueError as exc:
+        return f"Could not save `{src.name}`: {exc}"
+    return {"added": f"Saved as `test_images/{sku}/{target.name}`.",
+            "replaced": f"Replaced `test_images/{sku}/{target.name}`.",
+            "same": f"`{target.name}` is already in `test_images/{sku}/`."
+            }[status]
+
+
 def do_inspect(test_file, roi_mode, roi_text, threshold, state, sku=None):
     """Score one test image against the fitted subspace. Never refits.
 
@@ -1409,13 +1632,24 @@ def do_inspect(test_file, roi_mode, roi_text, threshold, state, sku=None):
                 "**saved test images**.", "")
 
     canvas = reg["canvas_size"]
-    # Prefer the checks in the table; the text box is the advanced fallback.
-    # Reading only the text box silently inspected with no ROIs at all.
+    # Prefer the checks being edited in this session, then the part's saved
+    # checks, then the advanced text box. The saved ones are what production
+    # inspects with; without that step a session whose working copy came back
+    # empty (a refresh racing a part load) inspected the whole part instead,
+    # silently -- the only sign was a green frame round the entire image.
+    no_checks = False
     try:
         if roi_mode == WHOLE_PART_MODE:
             rois = []
         else:
-            rois = state.get("draft_rois") or parse_rois(roi_text, canvas)
+            rois = state.get("draft_rois") or []
+            if not rois and sku:
+                try:
+                    rois = SKUConfig.load(sku).rois
+                except FileNotFoundError:
+                    rois = []
+            rois = rois or parse_rois(roi_text, canvas)
+            no_checks = not rois
     except ValueError as exc:
         return (None, None, f"Could not parse the ROI table: {exc}", "")
 
@@ -1467,6 +1701,10 @@ def do_inspect(test_file, roi_mode, roi_text, threshold, state, sku=None):
     stages = viz.grid(tiles, cols=min(5, len(tiles)))
 
     lines = [f"### {res.verdict}", ""]
+    if no_checks:
+        lines += ["⚠️ **This part has no checks** — the whole part was "
+                  "scored instead. Draw its checks in **② Registration → "
+                  "2. Inspection-sheet checks** and save them.", ""]
     lines.append("| check | surface (fails above limit) | shape (fails above "
                  "1.00) | verdict | detail |")
     lines.append("|---|---|---|---|---|")
@@ -2059,19 +2297,34 @@ def build_ui():
                     # only fires on a real change, so without this the box sits
                     # empty at launch while the summary above says 6 images.
                     _first_golden = load_examples(skus[0], "golden") if skus else []
-                    ref_files = gr.File(file_count="multiple",
-                                        file_types=UPLOAD_TYPES,
-                                        label="normal / golden images",
+                    # The list itself, hidden: a populated gr.File shows its
+                    # file table in place of the drop area and will not take
+                    # another drop. The visible box below only receives
+                    # drops, adds them here and empties itself, so photos can
+                    # be added one drop at a time. Fit, measure and save all
+                    # read this list.
+                    ref_files = gr.File(file_count="multiple", visible=False,
                                         value=_first_golden or None)
-                    ref_gallery = gr.Gallery(label="uploaded", columns=6,
+                    ref_drop = gr.File(file_count="multiple",
+                                       file_types=UPLOAD_TYPES,
+                                       label="drop golden photos here — each "
+                                             "drop adds to the list below",
+                                       height=120)
+                    ref_gallery = gr.Gallery(label="golden photos", columns=6,
                                              height=180,
-                                             value=_first_golden or None)
+                                             value=_viewable(_first_golden)
+                                             or None)
                     with gr.Row():
                         sku_save_imgs = gr.Button(
                             "save these images to the part")
+                        ref_clear = gr.Button("clear list", size="sm")
                         sku_import_status = gr.Markdown()
 
-                    fit_btn = gr.Button("Fit subspace", variant="primary")
+                    with gr.Row():
+                        fit_btn = gr.Button("Fit subspace", variant="primary",
+                                            scale=4)
+                        fit_cancel = gr.Button("Cancel", variant="stop",
+                                               scale=1)
                     fit_status = gr.Textbox(label="status", lines=6)
                     fit_stats = gr.Textbox(label="fit statistics", lines=10)
 
@@ -2201,15 +2454,19 @@ def build_ui():
                         "than estimated from the bad parts alone. Needs steps "
                         "1 and 2 first."
                     )
-                    ng_files = gr.File(
+                    # Hidden list + self-emptying drop area, as for golden.
+                    ng_files = gr.File(file_count="multiple", visible=False)
+                    ng_drop = gr.File(
                         file_count="multiple", file_types=UPLOAD_TYPES,
                         label="known-bad parts (NG) — parts that fail a check "
-                              "on the inspection sheet",
+                              "on the inspection sheet. Each drop adds to the "
+                              "list.",
                         height=120)
                     ng_gallery = gr.Gallery(label="NG set for this part",
                                             columns=6, height=150)
                     with gr.Row():
                         ng_save_btn = gr.Button("save these to the part")
+                        ng_clear = gr.Button("clear list", size="sm")
                         ng_status = gr.Markdown()
 
                     gr.Markdown(
@@ -2221,20 +2478,27 @@ def build_ui():
                         "the threshold is only an upper bound. Optional, but "
                         "it turns the suggestion into a measured window."
                     )
-                    ok_files = gr.File(
+                    ok_files = gr.File(file_count="multiple", visible=False)
+                    ok_drop = gr.File(
                         file_count="multiple", file_types=UPLOAD_TYPES,
                         label="known-good parts (OK) — parts that pass every "
-                              "check on the inspection sheet",
+                              "check on the inspection sheet. Each drop adds "
+                              "to the list.",
                         height=120)
                     ok_gallery = gr.Gallery(label="OK set for this part",
                                             columns=6, height=150)
                     with gr.Row():
                         ok_save_btn = gr.Button("save these to the part")
+                        ok_clear = gr.Button("clear list", size="sm")
                         ok_status = gr.Markdown()
 
                     tune_ready = gr.Markdown()
-                    tune_btn = gr.Button("Measure input resolution and "
-                                         "threshold", variant="primary")
+                    with gr.Row():
+                        tune_btn = gr.Button("Measure input resolution and "
+                                             "threshold", variant="primary",
+                                             scale=4)
+                        tune_cancel = gr.Button("Cancel", variant="stop",
+                                                scale=1)
                     tune_status = gr.Markdown()
 
                     with gr.Row():
@@ -2335,8 +2599,12 @@ def build_ui():
                 # settings because it is applied to scores that already exist,
                 # so moving it never needs a re-fit -- which is also what lets
                 # the Accuracy tab recompute instantly from cached scores.
-                threshold = gr.Slider(
-                    0.5, 40.0, value=6.0, step=0.5,
+                # A number, not a slider: a slider needs a fixed maximum, and
+                # scores have no common scale across parts -- one part's
+                # measured threshold is ~20, another's ~218, which the old
+                # 40.0 cap rejected with an error on every event reading it.
+                threshold = gr.Number(
+                    value=6.0, minimum=0,
                     label="verdict threshold",
                     info="an ROI fails above this score. Put it in the gap "
                          "between the worst good part and the best bad one; "
@@ -2361,8 +2629,17 @@ def build_ui():
                 test_file = gr.File(
                     file_types=UPLOAD_TYPES, label="part to inspect",
                     height=120)
-                load_test = gr.Button(
-                    "…or load this part's saved test images")
+                with gr.Row():
+                    # Keeps an uploaded part for later: it joins the gallery
+                    # below and "Inspect all". HEIC is saved as JPG.
+                    test_save_btn = gr.Button(
+                        "save this photo to the part's test images",
+                        size="sm")
+                    # The gallery already loads the folder on part select;
+                    # this only matters after copying photos in by hand.
+                    load_test = gr.Button("↻ reload from test_images folder",
+                                          size="sm")
+                test_save_status = gr.Markdown()
                 # `columns` is a maximum, not a fixed count: with one saved
                 # image a 6-column grid gave it a sixth of the width and
                 # cropped it to a strip. `object_fit="contain"` shows the whole
@@ -2376,11 +2653,25 @@ def build_ui():
                     label="saved test images — click one to view it full size "
                           "and select it for inspection",
                     columns=4, height="auto", object_fit="contain",
-                    elem_id="test_gallery", allow_preview=True,
-                    preview=False)
+                    # No preview: a click ticks the photo, and opening a
+                    # full-size view on the same click got in the way.
+                    elem_id="test_gallery", allow_preview=False,
+                    preview=False,
+                    # Display only. "Inspect all" reads it as an input, which
+                    # made Gradio show a "Drop Media Here" area -- and photos
+                    # dropped there were never saved anywhere.
+                    interactive=False)
+                with gr.Row():
+                    tick_all_btn = gr.Button("tick all", size="sm")
+                    tick_clear_btn = gr.Button("clear ticks", size="sm")
+                # Names ticked in the gallery, and the one-by-one run: the
+                # photos it covers and which one is showing.
+                test_ticked = gr.State([])
+                test_queue = gr.State({})
                 with gr.Row():
                     inspect_btn = gr.Button("Inspect one by one",
                                             variant="primary")
+                    next_btn = gr.Button("Next ▶", interactive=False)
                     inspect_all_btn = gr.Button("Inspect all")
 
                 with gr.Group():
@@ -2389,11 +2680,14 @@ def build_ui():
                                             lines=6)
                     # No fixed `height`: it crops to fill. The CSS above caps
                     # the size in viewport units and fits the whole frame.
+                    # JPEG, not the default WebP: these are 1-2 MP result
+                    # images, and encoding and sending them took longer than
+                    # the inspection itself (~3 s of a 5-6 s click).
                     heat_img = gr.Image(label="anomaly heatmap on aligned part",
-                                        elem_id="heat_img")
+                                        elem_id="heat_img", format="jpeg")
                     stages_img = gr.Image(label="stages: raw -> mask -> ink -> "
                                                 "aligned -> ROI crops",
-                                          elem_id="stages_img")
+                                          elem_id="stages_img", format="jpeg")
 
               with gr.Tab("③ ACCURACY — measure it"):
                     gr.Markdown(
@@ -2437,10 +2731,18 @@ def build_ui():
 
         thr_apply_btn.click(_thr_apply, [state, sku_pick, threshold], threshold)
 
-        ref_files.change(lambda fs: _viewable(
-                             [f if isinstance(f, str) else f.name
-                              for f in (fs or [])]),
+        ref_files.change(lambda fs: _viewable(_paths(fs)),
                          ref_files, ref_gallery)
+        # Each drop is added to the hidden list and the drop area empties
+        # itself, ready for the next one.
+        for _drop, _held in ((ref_drop, ref_files), (ng_drop, ng_files),
+                             (ok_drop, ok_files)):
+            _drop.upload(_add_drops, [_held, _drop], [_held, _drop])
+        ref_clear.click(lambda: None, None, ref_files)
+        ng_clear.click(lambda: None, None, ng_files)
+        ok_clear.click(lambda: None, None, ok_files)
+        # A dropped-but-unsaved list belongs to the part it was dropped for.
+        sku_pick.change(lambda: (None, None), None, [ng_files, ok_files])
 
         # --- SKU management -------------------------------------------------
         # Every picker points at the same list, so adding or deleting a part
@@ -2482,8 +2784,25 @@ def build_ui():
         def _test_list(sku):
             return load_examples(sku, "test") if sku else []
 
+        def _test_items(sku, ticked, current=None):
+            """Gallery entries: file name, ✓ when ticked, ▶ when showing.
+
+            The photo being inspected is marked in its caption rather than
+            by setting the gallery's selected image: selecting behaves like a
+            click, which toggled the tick and opened the preview.
+            """
+            files = _test_list(sku)
+            items = []
+            for f, v in zip(files, _viewable(files)):
+                name = Path(f).name
+                mark = ("▶ " if name == current else "") + \
+                       ("✓ " if name in ticked else "")
+                items.append((v, mark + name))
+            return items
+
         def _test_view(sku):
-            return _viewable(_test_list(sku))
+            """Fresh gallery for a part, and no ticks carried over."""
+            return _test_items(sku, []), []
 
         def _test_gallery_label(sku):
             """Say how many saved test images this part has.
@@ -2498,26 +2817,80 @@ def build_ui():
                     label="saved test images — none in test_images/ for this "
                           "part; upload one above instead")
             return gr.update(
-                label=f"saved test images — {n} for this part, click one to "
-                      f"inspect it")
+                label=f"saved test images — {n} for this part. Click a photo "
+                      f"to tick it (✓), then Inspect one by one")
 
-        load_test.click(_test_view, sku_pick, test_gallery)
+        _view_out = [test_gallery, test_ticked]
+        load_test.click(_test_view, sku_pick, _view_out)
+        test_save_btn.click(do_test_save, [test_file, sku_pick],
+                            test_save_status).then(
+                                _test_view, sku_pick, _view_out).then(
+                                    _test_gallery_label, sku_pick,
+                                    test_gallery)
         # Loaded up front and on every part switch, like the NG and OK
         # galleries. Behind a button it looked empty until pressed, and after
         # switching parts it kept showing the previous part's images.
-        for _fn, _out in ((_test_view, test_gallery),
+        for _fn, _out in ((_test_view, _view_out),
                           (_test_gallery_label, test_gallery)):
             app.load(_fn, sku_pick, _out)
             sku_pick.change(_fn, sku_pick, _out)
 
-        def _pick_test(sku, evt: gr.SelectData):
-            """A gallery click selects that image as the part to inspect."""
-            files = load_examples(sku, "test")
+        def _toggle_tick(sku, ticked, evt: gr.SelectData):
+            """A gallery click ticks or unticks that photo."""
+            files = _test_list(sku)
             if evt.index is None or evt.index >= len(files):
-                return gr.update()
-            return files[evt.index]
+                return ticked, gr.update()
+            name = Path(files[evt.index]).name
+            ticked = ([n for n in ticked if n != name] if name in ticked
+                      else ticked + [name])
+            return ticked, _test_items(sku, ticked)
 
-        test_gallery.select(_pick_test, sku_pick, test_file)
+        test_gallery.select(_toggle_tick, [sku_pick, test_ticked],
+                            [test_ticked, test_gallery])
+        tick_all_btn.click(
+            lambda s: ([Path(f).name for f in _test_list(s)],
+                       _test_items(s, [Path(f).name for f in _test_list(s)])),
+            sku_pick, [test_ticked, test_gallery])
+        tick_clear_btn.click(lambda s: ([], _test_items(s, [])), sku_pick,
+                             [test_ticked, test_gallery])
+
+        def _show(queue, sku, roi_mode, roi_text, thr, state):
+            """Inspect the queue's current photo and mark it in the gallery."""
+            paths, i = queue["paths"], queue["i"]
+            path, n = paths[i], len(paths)
+            heat, stages, md, timing = do_inspect(path, roi_mode, roi_text,
+                                                  thr, state, sku)
+            md = f"#### Photo {i + 1} of {n} · `{Path(path).name}`\n\n{md or ''}"
+            gallery = _test_items(sku, queue.get("ticked", []),
+                                  current=Path(path).name)
+            more = i + 1 < n
+            nxt = gr.update(interactive=more,
+                            value=(f"Next ▶ ({i + 2} of {n})" if more
+                                   else "Next ▶"))
+            return heat, stages, md, timing, queue, gallery, nxt
+
+        def _start_one_by_one(sku, ticked, upload, roi_mode, roi_text, thr,
+                              state):
+            files = _test_list(sku)
+            paths = [f for f in files if Path(f).name in ticked]
+            if not paths and upload is not None:
+                # Nothing ticked: the photo in "part to inspect", as before.
+                paths = [_original(upload if isinstance(upload, str)
+                                   else upload.name)]
+            if not paths:
+                return (None, None,
+                        "Tick photos in the gallery (click them), or upload "
+                        "one in **part to inspect**.", "", {}, gr.update(),
+                        gr.update(interactive=False, value="Next ▶"))
+            return _show({"paths": paths, "i": 0, "ticked": list(ticked)},
+                         sku, roi_mode, roi_text, thr, state)
+
+        def _next_one(queue, sku, roi_mode, roi_text, thr, state):
+            if not queue or queue["i"] + 1 >= len(queue["paths"]):
+                return (gr.update(),) * 4 + (queue, gr.update(),
+                                             gr.update(interactive=False))
+            queue = {**queue, "i": queue["i"] + 1}
+            return _show(queue, sku, roi_mode, roi_text, thr, state)
         sheet_btn.click(inspection_sheet, sku_pick, sheet_img)
         sheet_upload.upload(do_sheet_upload, [sheet_upload, sku_pick],
                             [sheet_img, roi_status])
@@ -2549,16 +2922,14 @@ def build_ui():
                            [state, roi_save_status]).then(
                                sku_summary, sku_pick, sku_info)
         # Writes nothing: applying means re-fitting and saving, both explicit.
-        ng_files.change(lambda fs: _viewable(
-                            [f if isinstance(f, str) else f.name
-                             for f in (fs or [])]), ng_files, ng_gallery)
+        ng_files.change(lambda fs, s: _viewable(_saved_plus(_ng_list(s), fs)),
+                        [ng_files, sku_pick], ng_gallery)
         ng_save_btn.click(do_ng_import, [ng_files, sku_pick],
                           ng_status).then(_ng_view, sku_pick, ng_gallery).then(
                               _ng_gallery_label, sku_pick, ng_gallery).then(
                                   _tune_ready, sku_pick, tune_ready)
-        ok_files.change(lambda fs: _viewable(
-                            [f if isinstance(f, str) else f.name
-                             for f in (fs or [])]), ok_files, ok_gallery)
+        ok_files.change(lambda fs, s: _viewable(_saved_plus(_ok_list(s), fs)),
+                        [ok_files, sku_pick], ok_gallery)
         ok_save_btn.click(do_ok_import, [ok_files, sku_pick],
                           ok_status).then(_ok_view, sku_pick, ok_gallery).then(
                               _ok_gallery_label, sku_pick, ok_gallery).then(
@@ -2578,14 +2949,26 @@ def build_ui():
         # Three outputs, matching do_tune's three return values. The Inspection
         # slider is deliberately not listed: tune_thr mirrors into it below, so
         # naming it here only desynchronises the arity from the handler.
+        # Unqueued, so the click lands while the long step is still running
+        # rather than waiting behind it.
+        fit_cancel.click(do_cancel, None, fit_status, queue=False)
+        tune_cancel.click(do_cancel, None, tune_status, queue=False)
         tune_btn.click(do_tune, [ref_files, sku_pick, state],
                        [input_size, tune_thr, tune_status])
         tune_thr.change(lambda v: v, tune_thr, threshold)
         threshold.change(lambda v: v, threshold, tune_thr)
+        _one_out = [heat_img, stages_img, verdict_md, timing_box, test_queue,
+                    test_gallery, next_btn]
         inspect_btn.click(
-            do_inspect,
-            [test_file, roi_mode, roi_text, threshold, state, sku_pick],
-            [heat_img, stages_img, verdict_md, timing_box],
+            _start_one_by_one,
+            [sku_pick, test_ticked, test_file, roi_mode, roi_text, threshold,
+             state],
+            _one_out,
+        )
+        next_btn.click(
+            _next_one,
+            [test_queue, sku_pick, roi_mode, roi_text, threshold, state],
+            _one_out,
         )
         inspect_all_btn.click(
             do_inspect_all,
@@ -2618,6 +3001,11 @@ def build_ui():
                  [ref_files, ref_gallery, sheet_img, sku_info, roi_save_sku])
         app.load(do_roi_load, [sku_pick, state],
                  [state, roi_preview, roi_table, roi_status])
+        # What is already saved for the part, so a part fitted and checked in
+        # an earlier session does not look like it has nothing.
+        for _evt in (app.load, sku_pick.change):
+            _evt(saved_fit_status, sku_pick, [fit_status, fit_stats])
+            _evt(saved_checks_status, sku_pick, roi_save_status)
         app.load(_thr_note, [state, sku_pick], thr_note)
         sku_pick.change(_thr_note, [state, sku_pick], thr_note)
 
@@ -2670,8 +3058,48 @@ def build_ui():
     return app
 
 
+def _preload_models():
+    """Load every model the saved parts use, in the background at startup.
+
+    Loading is lazy, so without this the operator's first click paid for it:
+    86 s on the station PC before the first fit or inspection even began.
+    Both loaders cache under a lock, so a click made while this is still
+    running waits for the same load rather than starting a second one.
+    """
+    from inspector import features as feat_mod
+    from inspector import segment
+
+    cfgs = [PipelineConfig()]
+    for sku in available_skus():
+        try:
+            with np.load(MODEL_DIR / sku / "model.npz") as z:
+                cfgs.append(PipelineConfig.from_dict(
+                    json.loads(str(z["config_json"]))))
+        except (OSError, KeyError, ValueError):
+            continue                       # no model yet, or unreadable
+    t0 = time.time()
+    seen = set()
+    try:
+        for c in cfgs:
+            if c.segment.method in ("birefnet", "auto") and \
+                    c.segment.birefnet_model not in seen:
+                seen.add(c.segment.birefnet_model)
+                segment.birefnet_available(c.segment)
+            if c.features.backbone not in seen:
+                seen.add(c.features.backbone)
+                feat_mod.load_backbone(c.features)
+        print(f"\nModels ready ({', '.join(sorted(seen))}) in "
+              f"{time.time() - t0:.0f} s.\n", flush=True)
+    except Exception:  # noqa: BLE001 - the first click will load and report it
+        log.exception("background model preload failed")
+
+
 if __name__ == "__main__":
     print("\nStarting the demo UI - open http://127.0.0.1:7860 "
           "(the first run downloads model weights, which takes a few "
           "minutes)\n", flush=True)
+    print("Loading models in the background; the page is usable now and "
+          "the first action waits for them if it gets there first.\n",
+          flush=True)
+    threading.Thread(target=_preload_models, daemon=True).start()
     build_ui().launch(css=UI_CSS)

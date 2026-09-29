@@ -15,7 +15,7 @@ import cv2
 import numpy as np
 
 from . import align as align_mod
-from . import inkmask, segment
+from . import cancel, inkmask, segment
 from .config import PipelineConfig
 
 log = logging.getLogger(__name__)
@@ -124,6 +124,9 @@ def preprocess(
     the canonical frame. Every other call -- golden or test -- reuses the
     saved reference and therefore lands in exactly the same frame.
     """
+    # Every photo a fit or a threshold measurement handles passes here first,
+    # so this is where a cancel takes effect -- within about one photo.
+    cancel.check()
     res = PreprocessResult(source=source, image=image)
 
     part = segment.segment_part(image, cfg.segment)
