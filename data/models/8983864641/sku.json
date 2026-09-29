@@ -5,7 +5,7 @@
     988
   ],
   "ref_area_px": 30407.0,
-  "threshold": 18.5,
+  "threshold": 20.6,
   "rois": [
     {
       "id": "corner_top_left",
@@ -38,21 +38,21 @@
       "id": "tab_top_right",
       "type": "appearance",
       "box": [
-        880,
-        72,
-        180,
-        120
+        900,
+        90,
+        200,
+        140
       ],
-      "note": "Inspection sheet check 1: the part must have the tab at top right. IS sheet: ชิ้นงานต้องมีปีกอยู่ด้านขวาบน"
+      "note": "Inspection sheet check 1: the part must have the tab at top right. IS sheet: ชิ้นงานต้องมีปีกอยู่ด้านขวาบน. Box runs down to y=230 to cover where the wing ends: on a good part it stops near (1045,185), and a wing that runs on past that was missed by the old 880,72,180,120 box."
     },
     {
       "id": "tab_top_right_geom",
       "type": "geometry",
       "box": [
-        880,
-        72,
-        180,
-        120
+        900,
+        90,
+        200,
+        140
       ],
       "tolerance": {
         "area_pct": 10.0,
@@ -67,6 +67,6 @@
     51,
     64
   ],
-  "threshold_worst_ok": 14.35,
-  "threshold_best_ng": 21.72
+  "threshold_worst_ok": 15.532109260559082,
+  "threshold_best_ng": 27.406524658203125
 }

@@ -45,28 +45,31 @@ geometry ROI costs ~0.03 ms — compute is never the reason to drop one.
 
 ## 2. How tight to frame it
 
-**Appearance: tight. Geometry: loose.** They measure different things and
-want opposite framing.
+**One box, drawn around the feature, used by both checks.** The demo editor
+works this way: the operator draws one box per inspection-sheet item, it is
+stored as `<name>` (appearance) and `<name>_geom` (geometry) over the same
+box, and the geometry half is added only when the outline clearly runs
+through the box (15–85% part, `outline_through`). Keep it that way — the
+operator should never have to know the two checks apart.
 
-Appearance scores the **surface inside** the box, so background is dead
-weight — it dilutes the anomaly signal and drags in variation that has
-nothing to do with the check.
+Frame the box around the **whole feature, including where it ends**. On SKU
+8983864641 the wing check stopped at the corner where a good wing ends, so a
+wing that ran on too long sat entirely outside it and passed. Moving the box
+to 900,90,200,140 covered the wing's end and caught it (appearance 21.6 vs
+worst good part 15.1).
 
-Geometry measures the **outline crossing** the box, so it needs room around
-the feature. Framed too close, the box's own edges start being measured
-instead of the part.
+Do not pad the geometry box to "give it room". Measured on the same SKU,
+padding each side of the drawn box only hurt:
 
-Measured on SKU 8983864641, changing only the box:
-
-| change | appearance margin | geometry |
+| geometry box | top-left corner | top-right wing |
 |---|---|---|
-| tab box 40% → 56% part | 1.15× → 1.51× | 0.82× → 1.16× |
-| corner box height 220 → 180 | 1.51× → **2.33×** | good part scored **1.19** — false fail |
+| as drawn | every good part < 0.70 | missing / raised / too-long wing: 1.19 / 1.13 / 1.86 — all caught |
+| +10% each side | fine | 1.10 / 1.07 / 3.19 |
+| +20% each side | a good part scored **4.61** — false fail | 0.52 / 0.87 — **missing and raised wing pass** |
 
-The corner case is the one to remember: the tighter box was clearly better
-for appearance and unusable for geometry. Because the two are separate rows
-in `sku.json`, they do not have to share a box — give each the framing it
-wants.
+Padding pulls more of the part into the box, so the feature is a smaller share
+of what is measured. Too tight is also bad: a corner box cut from height 220
+to 180 made a good part score 1.19. Draw around the feature itself.
 
 ## 3. Check the box before trusting it
 
@@ -79,8 +82,9 @@ diluted. `demo.py` warns on this when a box is drawn or edited
 **Geometry on flat interior.** If the silhouette has no edge inside the box
 (area fraction above ~0.95 or below ~0.05), a geometry check there cannot
 catch anything — but it still fires on segmentation noise, so it only ever
-costs you good parts. `geometry_useless_here` warns; registration warns
-again when it fits the nominal.
+costs you good parts. The editor leaves it out automatically
+(`outline_through`); registration still warns when a hand-written one is
+fitted.
 
 **Too few patches.** With `max` aggregation an appearance ROI below ~25
 valid patches rides on one or two of them, and a good part trips it on an

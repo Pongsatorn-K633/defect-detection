@@ -6,7 +6,7 @@ patch cell and the residual explodes on a perfectly good part.
 
 The transform chain is:
     similarity from mask moments (translation + rotation + scale)
-      -> 180-degree axis disambiguation against the reference mask
+      -> quarter-turn axis disambiguation against the reference mask
       -> optional ECC homography refinement to absorb mild out-of-plane tilt
 """
 from __future__ import annotations
@@ -139,17 +139,21 @@ def _iou(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def resolve_axis_ambiguity(mask, angle, ref_mask, ref_stats) -> float:
-    """The principal axis is 180-degree ambiguous; pick the better orientation.
+    """The principal axis is ambiguous; pick the orientation that fits best.
 
-    Both candidates are warped and scored by IoU against the reference mask.
-    Without this the part flips upside down roughly half the time and every
-    ROI lands on the wrong feature.
+    All four quarter turns are warped and scored by IoU against the reference
+    mask. The axis is always 180-degree ambiguous -- without that check the
+    part flips upside down about half the time -- and on a near-square part it
+    is 90-degree ambiguous too: which axis comes out "principal" swaps as the
+    part rotates. SKU 898213-8740's bracket, turned 30-45 degrees on the
+    table, aligned a quarter turn off (IoU 0.47-0.49 against 0.94-0.97 for the
+    same part square-on) when only 0 and 180 were tried.
     """
     mom = mask_moments(mask)
     canvas = ref_stats["canvas_size"]
 
     best_angle, best_iou = angle, -1.0
-    for cand in (angle, angle + np.pi):
+    for cand in (angle + k * np.pi / 2.0 for k in range(4)):
         scale = _scale_for(mask, ref_stats, mom["centroid"], cand)
         M = _similarity(mom["centroid"], cand, scale, canvas)
         iou = _iou(_warp_mask(mask, M, canvas), ref_mask)

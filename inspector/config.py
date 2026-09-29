@@ -95,6 +95,14 @@ class AlignConfig:
     # the canvas -- a diverged ECC produces wild homographies that silently
     # destroy alignment.
     ecc_max_corner_shift_frac: float = 0.08
+    # Below this outline overlap (IoU) with the reference the part is not
+    # lying as the golden parts did -- tipped onto another face, or not the
+    # same view -- and no 2D alignment can fix it. Registration leaves such a
+    # photo out of the reference; inspection answers RETAKE instead of a
+    # verdict. Set in the gap measured across all three sample SKUs: every
+    # real photo, known-bad parts included, aligned at 0.92-0.99, while
+    # 898213-8740's tipped parts reached only 0.46-0.67.
+    min_iou: float = 0.85
 
 
 @dataclass

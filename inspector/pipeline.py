@@ -200,6 +200,18 @@ def preprocess(
 
     if ref_mask is not None:
         res.info.update(align_mod.alignment_quality(aligned_part, ref_mask))
+        iou = res.info.get("iou", 1.0)
+        if iou < cfg.align.min_iou:
+            # A different pose, not a defect: scoring it would compare the
+            # wrong view patch by patch and fail a good part.
+            res.info["pose_rejected"] = True
+            if res.ok:
+                res.ok = False
+                res.reject_reason = (
+                    f"part is not lying as on the inspection sheet (outline "
+                    f"overlap {iou:.2f}, needs {cfg.align.min_iou:.2f}) - lay "
+                    f"it flat as shown and retake")
+                res.reject_reason_th = "วางชิ้นงานตามรูป"
     return res
 
 
@@ -241,7 +253,10 @@ def build_reference(images: list[np.ndarray], cfg: PipelineConfig,
                        ref_image=ref_image, source=src)
             for img, src in zip(images, sources)
         ]
-        aligned = [r for r in results if r.aligned_part_mask is not None]
+        # A photo in a different pose would be averaged in as a ghost -- the
+        # double outline 898213-8740's reference showed -- so it is left out.
+        aligned = [r for r in results if r.aligned_part_mask is not None
+                   and not r.info.get("pose_rejected")]
         if len(aligned) < 2:
             break
         # Median silhouette: a pixel belongs to the consensus part if at least

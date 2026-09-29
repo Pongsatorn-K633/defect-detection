@@ -27,13 +27,14 @@ from inspector import subspace as sub_mod
 from inspector import tuning
 from inspector import viz
 from inspector.config import (DATA_DIR, GOLDEN_DIR, MODEL_DIR, NG_DIR,
-                              TEST_DIR,
+                              OK_DIR, OUTPUT_DIR, TEST_DIR,
                               PipelineConfig, fit_signature)
 from inspector.inspect import inspect_image
 from inspector.pipeline import IMAGE_SUFFIXES, load_image
 from inspector.register import (load_registration, register_sku,
-                                save_registration)
-from inspector.roi import ROI, SKUConfig
+                                save_registration, update_geometry_nominals)
+from inspector.roi import (DEFAULT_TOLERANCE, GEOM_SUFFIX, ROI, SKUConfig,
+                           check_box, group_checks)
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 # httpx logs every request at INFO and buries Gradio's "Running on"
@@ -106,6 +107,101 @@ def _to_bgr(img) -> np.ndarray:
     if arr.shape[2] == 4:
         arr = cv2.cvtColor(arr, cv2.COLOR_RGBA2RGB)
     return cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+
+
+# Upload boxes list extensions rather than Gradio's "image" category. The
+# browser half of Gradio turns "image" into `image/*` and checks the MIME type
+# the browser reports -- and on Windows the browser reports none for HEIC, so
+# iPhone photos were refused with "Invalid file type" before reaching Python,
+# which decodes them fine. Extensions are matched on the name instead.
+UPLOAD_TYPES = sorted(IMAGE_SUFFIXES)
+
+# Browsers cannot display HEIC either, so galleries are handed a JPEG preview
+# of it. Gradio serves gallery files from its own cache and hands back only
+# the copy, so the preview's name is what maps it to the original.
+PREVIEW_DIR = OUTPUT_DIR / "previews"
+_HEIF = {".heic", ".heif"}
+_PREVIEW_SRC: dict[str, str] = {}
+
+
+def _viewable(paths) -> list[str]:
+    """Paths a browser can display: HEIC swapped for a cached JPEG preview."""
+    return [_heif_preview(str(p)) if Path(str(p)).suffix.lower() in _HEIF
+            else str(p) for p in (paths or [])]
+
+
+def _heif_preview(path: str) -> str:
+    src = Path(path)
+    try:
+        st = src.stat()
+    except OSError:
+        return path
+    import hashlib
+
+    # Keyed on the file's identity and version, so an edited photo never
+    # shows a stale preview and two photos with one name never collide.
+    key = hashlib.sha1(f"{src.resolve()}|{st.st_size}|{st.st_mtime_ns}"
+                       .encode()).hexdigest()[:12]
+    dest = PREVIEW_DIR / f"{src.stem}.{key}.preview.jpg"
+    if not dest.exists():
+        try:
+            img = load_image(src)          # upright, same as the pipeline sees
+        except ValueError:
+            return path
+        PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
+        ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        if not ok:
+            return path
+        buf.tofile(str(dest))              # unicode-safe on Windows
+    _PREVIEW_SRC[dest.name] = str(src)
+    return str(dest)
+
+
+def _store_photo(src: Path, dest_dir: Path, stem: str | None = None):
+    """Save one photo into a part folder; returns `(target, status)`.
+
+    HEIC is converted to an upright JPEG (quality 95) on the way in, so every
+    saved photo opens in Explorer and the browser, and its orientation is
+    settled once rather than left to each reader. At quality 95 a 12 MP
+    iPhone photo becomes a 5-7 MB JPEG within ~1.2 grey levels (of 255) of
+    the HEIC on average (SKU 898213-8740's golden set).
+
+    `status` is "added", "replaced" or "same" -- same meaning the folder
+    already holds exactly these bytes, which a repeated save of the part's
+    own photos always does.
+    """
+    import shutil
+
+    heif = src.suffix.lower() in _HEIF
+    target = dest_dir / f"{stem or src.stem}{'.jpg' if heif else src.suffix}"
+    if heif:
+        ok, buf = cv2.imencode(".jpg", load_image(src),
+                               [cv2.IMWRITE_JPEG_QUALITY, 95])
+        if not ok:
+            raise ValueError(f"could not convert {src.name} to JPEG")
+        data = buf.tobytes()
+    else:
+        data = None
+    if target.exists():
+        if target.resolve() == src.resolve():
+            return target, "same"
+        new = data if heif else src.read_bytes()
+        if target.read_bytes() == new:
+            return target, "same"
+        status = "replaced"
+    else:
+        status = "added"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    if heif:
+        target.write_bytes(data)
+    else:
+        shutil.copy2(src, target)
+    return target, status
+
+
+def _original(path: str) -> str:
+    """The photo a gallery entry stands for -- never its display preview."""
+    return _PREVIEW_SRC.get(Path(path).name, path)
 
 
 def _to_rgb(img) -> np.ndarray:
@@ -380,33 +476,33 @@ def box_fill(box, reg=None, sku=None) -> float:
     return float((crop > 0).mean()) if crop.size else float("nan")
 
 
-def geometry_useless_here(box, reg=None, sku=None) -> bool:
-    """Does the silhouette have an edge inside this box?
+def outline_through(box, reg=None, sku=None) -> bool:
+    """Does the part's outline clearly run through this box?
 
-    A geometry check measures the part's outline. On solid interior the box is
-    simply full on every good part, so the check can never catch a defect --
-    an embossed mark or a scratch does not move the outline -- while still
-    firing whenever segmentation wobbles. Threshold from the sample SKUs: a box
-    straddling a real outline measures 0.40 (tab) or 0.62 (chamfered corner);
-    one on flat interior measures 0.97 (the embossed RH mark).
+    Decides whether a drawn box gets a shape check. A shape check measures the
+    outline, so on solid interior it can never catch a defect -- an embossed
+    mark or a scratch does not move the outline -- while still firing whenever
+    segmentation wobbles. A box that merely clips an edge is no better: it
+    measures that edge, not the feature drawn around.
 
-    Answered here from the reference mask, so it can be said while the box is
-    being drawn rather than only after a fit.
+    The band is set from the sample SKUs. Real shape checks sit well inside it,
+    at 55-62% part (SKU 8983864641's corner and wing). The RH stamp on SKU
+    8983980631 is 97% part, and nudged 10 px right it clips the notch beside
+    it at 91% -- a looser 5-95% band switched a shape check on there.
+
+    Unknown (no reference yet) counts as yes, as drawing did before.
     """
     mask = reg["ref_mask"] if reg else None
     if mask is None and sku:
         path = MODEL_DIR / sku / "reference_mask.png"
         if path.exists():
-            try:
-                mask = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-            except Exception:  # noqa: BLE001 - advisory only
-                mask = None
+            mask = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
     if mask is None:
-        return False
+        return True
     from inspector import geometry as geom_mod
 
     frac = geom_mod.measure_roi_geometry(mask, box).get("area_frac", float("nan"))
-    return bool(np.isfinite(frac) and (frac > 0.95 or frac < 0.05))
+    return bool(not np.isfinite(frac) or 0.15 <= frac <= 0.85)
 
 
 def _roi_canvas(reg, rois, pending=None, sku=None):
@@ -418,7 +514,7 @@ def _roi_canvas(reg, rois, pending=None, sku=None):
     base = reg["ref_image"] if reg else saved_reference(sku)
     if base is None:
         return None
-    img = viz.draw_rois(base, [r.to_dict() for r in rois])
+    img = viz.draw_rois(base, _check_boxes(rois))
     if pending is not None:
         x, y = pending
         cv2.drawMarker(img, (int(x), int(y)), (255, 255, 255),
@@ -429,8 +525,54 @@ def _roi_canvas(reg, rois, pending=None, sku=None):
     return _to_rgb(img)
 
 
+def _check_boxes(rois) -> list[dict]:
+    """One box per check for drawing, however many ROIs it is stored as.
+
+    A check whose geometry box differs from its appearance box -- only
+    possible from a hand-edited sku.json -- also shows the geometry box, so
+    what is actually measured is never hidden.
+    """
+    out = []
+    for name, app, geo in group_checks(rois):
+        out.append({"id": name, "box": list(check_box(app, geo))})
+        if app and geo and tuple(geo.box) != tuple(app.box):
+            out.append({"id": f"{name} (shape)", "box": list(geo.box)})
+    return out
+
+
 def _roi_rows(rois):
-    return [[r.id, r.type, *r.box, r.note] for r in rois]
+    """One table row per check; `shape check` says whether the outline is
+    measured too, which is decided for the operator rather than asked."""
+    rows = []
+    for name, app, geo in group_checks(rois):
+        note = (app.note if app and app.note else geo.note if geo else "")
+        rows.append([name, *check_box(app, geo), "yes" if geo else "no", note])
+    return rows
+
+
+def _build_check(name, box, note, reg, sku, prev_app=None, prev_geo=None):
+    """The ROIs for one drawn box: surface always, outline where it helps.
+
+    The outline check is only added where the part's outline clearly runs
+    through the box (`outline_through`). On flat interior it can never catch a
+    defect -- a stamp or a scratch does not move the outline -- but still
+    fires on segmentation noise, so leaving it in could only fail good parts.
+    Deciding here means the operator never has to know the two checks apart.
+
+    A per-check threshold or tolerance from `prev_*` is carried over, so
+    moving a box never quietly resets a limit someone measured.
+    """
+    box = tuple(int(v) for v in box)
+    rois = [ROI(name, "appearance", box,
+                threshold=prev_app.threshold if prev_app else None,
+                note=note)]
+    if outline_through(box, reg, sku):
+        tol = dict(prev_geo.tolerance) if prev_geo and prev_geo.tolerance \
+            else dict(DEFAULT_TOLERANCE)
+        rois.append(ROI(f"{name}{GEOM_SUFFIX}", "geometry", box,
+                        tolerance=tol,
+                        note=prev_geo.note if prev_geo else ""))
+    return rois
 
 
 def do_roi_click(state, evt: gr.SelectData):
@@ -475,35 +617,21 @@ def do_roi_click(state, evt: gr.SelectData):
                 "apart.")
 
     # A placeholder name: the table is the editor, so drawing only places the
-    # box. Both types are created because they catch opposite failures over the
-    # same region -- appearance sees a damaged feature, geometry sees a missing
-    # or bent one, and neither sees the other's case. Delete the geometry row
-    # when the check is surface-only (an embossed mark does not move the
-    # silhouette, so geometry there measures nothing).
-    existing = {r.id for r in rois}
-    n = len(rois) + 1
-    while f"check_{n}" in existing or f"check_{n}_geom" in existing:
+    # box. Whether the outline is checked too is decided by `_build_check`.
+    existing = {name for name, _, _ in group_checks(rois)}
+    n = len(existing) + 1
+    while f"check_{n}" in existing:
         n += 1
     name = f"check_{n}"
 
-    rois.append(ROI(name, "appearance", (bx, by, bw, bh)))
-    rois.append(ROI(f"{name}_geom", "geometry", (bx, by, bw, bh),
-                    tolerance={"area_pct": 10.0, "fill_ratio_pct": 12.0,
-                               "corner_angle_deg": 15.0}))
+    added = _build_check(name, (bx, by, bw, bh), "", reg, state.get("sku"))
+    rois.extend(added)
     state["draft_rois"] = rois
-    msg = (f"Added **{name}** (appearance) and **{name}_geom** (geometry) at "
-           f"({bx}, {by}, {bw}, {bh}) — they catch opposite failures over the "
-           f"same region. Rename them in the table below.")
-    if geometry_useless_here((bx, by, bw, bh), reg, state.get("sku")):
-        msg += (f"\n\n⚠️ **The outline has no edge inside this box** — it sits "
-                f"on flat part interior. A geometry check there can never "
-                f"catch a defect, but it will still fire when segmentation "
-                f"wobbles and fail a good part. **Delete `{name}_geom`** "
-                f"unless you drew this box for a shape feature.")
-    else:
-        msg += (f"\n\nIf this check is a surface mark that does not change the "
-                f"part's outline — an embossed stamp, a printed character — "
-                f"delete the `_geom` row.")
+    shape = ("the part's outline crosses it, so its **shape** is checked too"
+             if len(added) == 2 else
+             "it sits on flat surface, so only the **surface** is checked")
+    msg = (f"Added **{name}** at ({bx}, {by}, {bw}, {bh}) — {shape}. Give it "
+           f"a name in the table below.")
     fill = box_fill((bx, by, bw, bh), reg, state.get("sku"))
     if np.isfinite(fill) and fill < 0.45:
         msg += (f"\n\n⚠️ **Only {fill * 100:.0f}% of this box is part** — the "
@@ -514,12 +642,16 @@ def do_roi_click(state, evt: gr.SelectData):
 
 
 def do_roi_table_edit(rows, state):
-    """Rebuild the ROI list from the edited table.
+    """Rebuild the checks from the edited table, one row per check.
 
-    The table is the single editor: id, type, geometry and description are all
-    changed in place, and the canvas redraws from the result so a box moves as
-    soon as its numbers do. Bad rows are skipped rather than raising -- a
-    half-typed coordinate must not wipe the row being typed into.
+    The table is the single editor: name, box and description are changed in
+    place, and the canvas redraws from the result so a box moves as soon as
+    its numbers do. Bad rows are skipped rather than raising -- a half-typed
+    coordinate must not wipe the row being typed into.
+
+    A row is matched to the check it was, by name or else by position, so a
+    rename keeps that check's measured limits. An unmoved check is kept
+    exactly as it was; a moved one has its shape check decided afresh.
     """
     state = dict(state)
     reg = state.get("reg")
@@ -534,52 +666,67 @@ def do_roi_table_edit(rows, state):
     except AttributeError:
         records = list(rows or [])
 
-    rois, problems, seen = [], [], set()
+    before = group_checks(state.get("draft_rois", []))
+    by_name = {name: (app, geo) for name, app, geo in before}
+    # A previous check still present under its own name is not up for grabs
+    # by position -- otherwise an inserted row would inherit its limits.
+    named_now = {str((list(r) + [""])[0] or "").strip() for r in records}
+
+    rois, problems, seen, moved = [], [], set(), []
     for i, row in enumerate(records, 1):
         cells = list(row) + [""] * (7 - len(row))
-        rid = str(cells[0] or "").strip()
-        if not rid:
+        name = str(cells[0] or "").strip()
+        if not name:
             continue                      # a blank row is just an empty line
-        kind = str(cells[1] or "appearance").strip().lower()
-        if kind.startswith("geom"):
-            kind = "geometry"
-        elif kind.startswith("app"):
-            kind = "appearance"
-        else:
-            problems.append(f"row {i}: type must be appearance or geometry")
-            continue
         try:
-            box = tuple(int(round(float(v))) for v in cells[2:6])
+            box = tuple(int(round(float(v))) for v in cells[1:5])
         except (TypeError, ValueError):
-            problems.append(f"row {i} ({rid}): x, y, w, h must be numbers")
+            problems.append(f"row {i} ({name}): x, y, w, h must be numbers")
             continue
         if box[2] < 1 or box[3] < 1:
-            problems.append(f"row {i} ({rid}): width and height must be > 0")
+            problems.append(f"row {i} ({name}): width and height must be > 0")
             continue
-        if rid in seen:
-            problems.append(f"row {i}: '{rid}' is a duplicate name")
+        if name in seen:
+            problems.append(f"row {i}: '{name}' is a duplicate name")
             continue
-        seen.add(rid)
-        tol = {"area_pct": 10.0, "fill_ratio_pct": 12.0,
-               "corner_angle_deg": 15.0} if kind == "geometry" else {}
-        rois.append(ROI(rid, kind, box, tolerance=tol,
-                        note=str(cells[6] or "").strip()).clip(canvas))
+        seen.add(name)
+        note = str(cells[6] or "").strip()
+        box = ROI(name, box=box).clip(canvas).box
+
+        if name in by_name:
+            prev_app, prev_geo = by_name[name]
+        elif i <= len(before) and before[i - 1][0] not in named_now:
+            _, prev_app, prev_geo = before[i - 1]
+        else:
+            prev_app = prev_geo = None
+        prev = prev_app or prev_geo
+
+        if prev is not None and tuple(check_box(prev_app, prev_geo)) == box:
+            # Unmoved: keep both halves exactly, only renamed and re-noted.
+            if prev_app:
+                rois.append(ROI(name, "appearance", tuple(prev_app.box),
+                                prev_app.threshold, prev_app.tolerance, note))
+            if prev_geo:
+                rois.append(ROI(f"{name}{GEOM_SUFFIX}", "geometry",
+                                tuple(prev_geo.box), prev_geo.threshold,
+                                prev_geo.tolerance,
+                                prev_geo.note if prev_app else note))
+            continue
+        built = _build_check(name, box, note, reg, sku, prev_app, prev_geo)
+        rois.extend(built)
+        if prev is not None and len(built) == 2:
+            moved.append(name)
 
     state["draft_rois"] = rois
     state["roi_pending"] = None
-    msg = f"{len(rois)} check(s) defined."
+    msg = f"{len(seen)} check(s) defined."
     if problems:
         msg += " Skipped — " + "; ".join(problems[:4])
-    # Same advisory as when a box is drawn: a geometry row on flat interior
-    # measures nothing and can only misfire.
-    flat = [r.id for r in rois if r.type == "geometry"
-            and geometry_useless_here(r.box, reg, sku)]
-    if flat:
-        msg += (" ⚠️ " + ", ".join(f"`{i}`" for i in flat) +
-                (" sits" if len(flat) == 1 else " sit") +
-                " on flat part interior — the outline has no edge there, so "
-                "the check can only misfire on segmentation noise. Delete "
-                "unless drawn for a shape feature.")
+    if moved:
+        # The shape check compares against measurements taken on the old box.
+        # Saving re-measures it from this session's fit.
+        msg += (" Moved " + ", ".join(f"**{n}**" for n in moved) +
+                " — its shape is measured at the new position when you save.")
     msg += " *Not saved yet — press **Save sku.json** to make it stick.*"
     return state, _roi_canvas(reg, rois, sku=sku), msg
 
@@ -612,11 +759,18 @@ def do_roi_undo(state):
     state["roi_pending"] = None
     if not rois:
         return (state, _roi_canvas(reg, rois, sku=sku), [], "Nothing to undo.")
-    gone = rois.pop()
+    # The last *check*, both halves: undoing one drawn box must not leave its
+    # outline check behind as an orphan.
+    gone = group_checks(rois)[-1][0]
+    rois = [r for r in rois if not _in_check(r, gone)]
     state["draft_rois"] = rois
     return (state, _roi_canvas(reg, rois, sku=sku), _roi_rows(rois),
-            f"Removed **{gone.id}**. {len(rois)} left. *Not saved yet — press "
-            f"**Save sku.json** to make it stick.*")
+            f"Removed **{gone}**. {len(group_checks(rois))} left. *Not saved "
+            f"yet — press **Save sku.json** to make it stick.*")
+
+
+def _in_check(roi, name) -> bool:
+    return roi.id in (name, f"{name}{GEOM_SUFFIX}")
 
 
 def do_roi_delete(name, state):
@@ -634,16 +788,17 @@ def do_roi_delete(name, state):
         return (state, _roi_canvas(reg, rois, sku=sku), _roi_rows(rois),
                 "Type the name of the check to remove, exactly as it appears "
                 "in the table.")
-    keep = [r for r in rois if r.id != want]
+    keep = [r for r in rois if not _in_check(r, want)]
     if len(keep) == len(rois):
-        have = ", ".join(f"`{r.id}`" for r in rois) or "none defined"
+        have = ", ".join(f"`{n}`" for n, _, _ in group_checks(rois)) \
+            or "none defined"
         return (state, _roi_canvas(reg, rois, sku=sku), _roi_rows(rois),
                 f"No check called **{want}**. Defined: {have}.")
     state["draft_rois"] = keep
     state["roi_pending"] = None
     return (state, _roi_canvas(reg, keep, sku=sku), _roi_rows(keep),
-            f"Removed **{want}**. {len(keep)} left. *Not saved yet — press "
-            f"**Save sku.json** to make it stick.*")
+            f"Removed **{want}**. {len(group_checks(keep))} left. *Not saved "
+            f"yet — press **Save sku.json** to make it stick.*")
 
 
 def do_roi_clear(state):
@@ -682,7 +837,7 @@ def do_roi_load(sku, state):
     source = "this session's fit" if reg else "the saved reference"
     return (state, _roi_canvas(reg, cfg.rois, sku=sku),
             _roi_rows(cfg.rois),
-            f"Loaded {len(cfg.rois)} ROI(s) from {sku}, threshold "
+            f"Loaded {len(group_checks(cfg.rois))} check(s) from {sku}, threshold "
             f"{cfg.threshold}. Drawn on {source}. Edit and save to "
             f"overwrite.{hint}")
 
@@ -706,6 +861,14 @@ def _ok_list(sku):
     """Known-good photos already saved for this part."""
     from inspector.config import OK_DIR
     return _labelled_list(OK_DIR, sku)
+
+
+def _ng_view(sku):
+    return _viewable(_ng_list(sku))
+
+
+def _ok_view(sku):
+    return _viewable(_ok_list(sku))
 
 
 def _labelled_label(root, sku, kind):
@@ -830,21 +993,14 @@ def _import_labelled(files, sku, root, folder_name, what):
     if not paths:
         return "No images to save."
 
-    import shutil
-
     dest = root / sku
     dest.mkdir(parents=True, exist_ok=True)
     added, same = [], []
     for src in paths:
         if not src.exists():
             continue
-        target = dest / src.name
-        if target.exists() and target.stat().st_size == src.stat().st_size \
-                and target.read_bytes() == src.read_bytes():
-            same.append(src.name)
-            continue
-        shutil.copy2(src, target)
-        added.append(src.name)
+        target, status = _store_photo(src, dest)
+        (same if status == "same" else added).append(target.name)
     if added:
         return (f"Saved **{len(added)}** {what} photo(s) to "
                 f"`{folder_name}/{sku}/`" +
@@ -1123,8 +1279,18 @@ def do_save_tuned(sku, input_size, threshold, state):
 
 
 def do_roi_save(sku, threshold, state):
-    """Write sku.json -- the file the pipeline actually reads."""
+    """Write sku.json -- the file the pipeline actually reads.
+
+    Works from the saved model when nothing was fitted this session: the
+    canvas and the golden outlines are both on disk, so a restart does not
+    mean re-fitting just to adjust a box.
+    """
     reg = state.get("reg")
+    if reg is None:
+        try:
+            reg = load_registration(sku) if sku else None
+        except FileNotFoundError:
+            reg = None
     if reg is None:
         return state, "Fit the subspace first — the canvas size comes from it."
     rois = state.get("draft_rois", [])
@@ -1149,15 +1315,74 @@ def do_roi_save(sku, threshold, state):
         cfg.threshold_worst_ok = existing.threshold_worst_ok
         cfg.threshold_best_ng = existing.threshold_best_ng
     path = cfg.save()
-    return (state,
-            f"Saved **{len(rois)} ROI(s)** to `{path}`.\n\n"
-            f"Geometry ROIs need their nominals measured, so re-run "
-            f"registration before inspecting:\n\n"
-            f"```\npython -m inspector.register --sku {sku} "
-            f"--segmenter birefnet\n```")
+    msg = f"Saved **{len(group_checks(rois))} check(s)** to `{path}`."
+    # The shape half of a check compares against the golden parts' outline
+    # inside its box. This session's fit still holds every golden photo
+    # aligned, so that is measured right here -- no second fit just because
+    # the boxes were drawn after the first one.
+    if any(r.type == "geometry" for r in rois):
+        warnings = []
+        if update_geometry_nominals(reg, rois, say=warnings.append):
+            msg += (f"\n\nShape checks measured on the "
+                    f"{len(reg['sources'])} golden photos — ready to inspect.")
+            msg += "".join(f"\n\n⚠️ {w}" for w in warnings)
+        else:
+            # Only when the fit in memory is not the one on disk. The CLI
+            # this once suggested fits with default settings rather than the
+            # ones chosen here, so point at the app's own button instead.
+            msg += ("\n\n**Next: press Fit subspace** (step 1) so the shape "
+                    "check can measure the good parts inside the new box. "
+                    "Until then inspection reports it as not measured.")
+    return state, msg
 
 
 # -------------------------------------------------------------------- panel 3
+
+def _check_results(rois, results) -> list[dict]:
+    """Pair each check's ROI results so a check reads as one line and one box.
+
+    A check fails if either half fails -- the same rule `inspect_image` uses
+    for the part, applied one level down.
+    """
+    by_id = {r.id: r for r in results}
+    out = []
+    for name, app, geo in group_checks(rois):
+        ra = by_id.get(app.id) if app else None
+        rg = by_id.get(geo.id) if geo else None
+        out.append({
+            "name": name, "box": list(check_box(app, geo)),
+            "shape_box": (list(geo.box) if app and geo
+                          and tuple(geo.box) != tuple(app.box) else None),
+            "app": ra, "geo": rg,
+            "passed": all(r.passed for r in (ra, rg) if r is not None),
+        })
+    return out
+
+
+def _draw_checks(img, checks):
+    """One box per check: red when it fails, labelled with its surface score."""
+    out = img.copy()
+    for c in checks:
+        color = (0, 200, 0) if c["passed"] else (0, 0, 255)
+        lead = c["app"] or c["geo"]
+        cap = c["name"] if lead is None or not np.isfinite(lead.score) \
+            else f"{c['name']} {lead.score:.1f}"
+        for box in filter(None, (c["box"], c["shape_box"])):
+            x, y, w, h = box
+            cv2.rectangle(out, (x, y), (x + w, y + h), color, 2)
+        x, y = c["box"][:2]
+        out = viz.label(out, cap, (x + 3, max(y - 6, 14)), color, 0.5)
+    return out
+
+
+def _score_cell(r, with_limit: bool) -> str:
+    if r is None:
+        return "—"
+    if not np.isfinite(r.score):
+        return "n/a"
+    return f"{r.score:.2f} / {r.threshold:.2f}" if with_limit \
+        else f"{r.score:.2f}"
+
 
 def do_inspect(test_file, roi_mode, roi_text, threshold, state, sku=None):
     """Score one test image against the fitted subspace. Never refits.
@@ -1221,8 +1446,8 @@ def do_inspect(test_file, roi_mode, roi_text, threshold, state, sku=None):
     masked = np.where(res.valid_grid, res.score_map, 0.0)
     heat = viz.heatmap_overlay(res.pre.aligned_image, masked,
                                vmin=0.0, vmax=max(thr * 2.0, 1e-6))
-    heat = viz.draw_rois(heat, [r.to_dict() for r in sku_cfg.effective_rois()],
-                         {r.id: r.score for r in res.rois}, thr)
+    checks = _check_results(sku_cfg.effective_rois(), res.rois)
+    heat = _draw_checks(heat, checks)
 
     tiles = [(res.pre.image, "raw photo")]
     if res.pre.part_mask is not None:
@@ -1234,21 +1459,23 @@ def do_inspect(test_file, roi_mode, roi_text, threshold, state, sku=None):
     tiles.append((res.pre.aligned_image, "aligned canvas"))
     tiles.append((viz.overlay_mask(res.pre.aligned_image,
                                    res.pre.aligned_valid_mask), "valid mask"))
-    for roi in sku_cfg.effective_rois()[:3]:
-        x, y, w, h = roi.box
+    for c in checks[:3]:
+        x, y, w, h = c["box"]
         crop = res.pre.aligned_image[y:y + h, x:x + w]
         if crop.size:
-            tiles.append((crop, f"ROI {roi.id}"))
+            tiles.append((crop, f"check {c['name']}"))
     stages = viz.grid(tiles, cols=min(5, len(tiles)))
 
     lines = [f"### {res.verdict}", ""]
-    lines.append("| ROI | type | score | threshold | verdict | detail |")
-    lines.append("|---|---|---|---|---|---|")
-    for r in res.rois:
-        mark = "PASS" if r.passed else "**FAIL**"
-        score = "n/a" if not np.isfinite(r.score) else f"{r.score:.2f}"
-        lines.append(f"| {r.id} | {r.type} | {score} | "
-                     f"{r.threshold:.2f} | {mark} | {r.detail} |")
+    lines.append("| check | surface (fails above limit) | shape (fails above "
+                 "1.00) | verdict | detail |")
+    lines.append("|---|---|---|---|---|")
+    for c in checks:
+        mark = "PASS" if c["passed"] else "**FAIL**"
+        details = "; ".join(r.detail for r in (c["app"], c["geo"])
+                            if r is not None and r.detail)
+        lines.append(f"| {c['name']} | {_score_cell(c['app'], True)} | "
+                     f"{_score_cell(c['geo'], False)} | {mark} | {details} |")
 
     gs = reg["golden_scores"].get("whole_part", [])
     if gs:
@@ -1275,8 +1502,8 @@ def _first_score(text):
     m = re.search(r"\| score \| \*\*([\d.]+)\*\*", text)
     if m:
         return m.group(1)
-    # Older layout: a per-ROI table. The worst score is what decided it.
-    vals = [float(v) for v in re.findall(r"\| ([\d.]+) \| [\d.]+ \|", text)]
+    # Per-check table: the worst surface score (`score / limit`) decided it.
+    vals = [float(v) for v in re.findall(r"\| ([\d.]+) / [\d.]+ \|", text)]
     return f"{max(vals):.2f}" if vals else "-"
 
 
@@ -1284,8 +1511,8 @@ def _failed_checks(text):
     m = re.search(r"^Failed: (.+)$", text, re.M)
     if m:
         return m.group(1)
-    # Older layout: read the rows marked FAIL out of the per-ROI table.
-    bad = re.findall(r"^\| ([\w_]+) \| \w+ \|[^|]+\|[^|]+\| \*\*FAIL\*\*",
+    # Per-check table: name | surface | shape | verdict | detail.
+    bad = re.findall(r"^\| ([\w_]+) \|[^|]+\|[^|]+\| \*\*FAIL\*\*",
                      text, re.M)
     return ", ".join(f"`{b}`" for b in bad)
 
@@ -1304,7 +1531,8 @@ def do_inspect_all(gallery, roi_mode, roi_text, threshold, state,
         if isinstance(path, dict):
             path = path.get("path", "")
         if path:
-            paths.append(str(path))
+            # A HEIC shows as a JPEG preview; inspect the photo itself.
+            paths.append(_original(str(path)))
     if not paths:
         return (None, None,
                 "Nothing to inspect - upload parts or load this part's saved "
@@ -1523,6 +1751,41 @@ def inspection_sheet(sku: str):
     return None
 
 
+def do_sheet_upload(file, sku):
+    """Save an uploaded inspection sheet as `normal_images/<sku>/IS_<sku>.*`.
+
+    The `IS_` prefix is what keeps the sheet out of the golden set everywhere
+    else, so the name is set here rather than trusting the upload's own. Any
+    earlier sheet is replaced: `inspection_sheet` shows only the first one, so
+    keeping two would leave the old one on screen.
+    """
+    if not sku:
+        return gr.update(), "Select or add a part first."
+    if file is None:
+        return gr.update(), "No file received."
+    src = Path(file if isinstance(file, str) else file.name)
+    suffix = src.suffix.lower()
+    if suffix not in IMAGE_SUFFIXES:
+        return gr.update(), (f"`{src.name}` is not a supported image "
+                             f"({', '.join(sorted(IMAGE_SUFFIXES))}).")
+    try:
+        load_image(src)                   # refuse a file that will not open
+    except ValueError as exc:
+        return gr.update(), f"Could not read `{src.name}`: {exc}"
+
+    folder = GOLDEN_DIR / sku
+    folder.mkdir(parents=True, exist_ok=True)
+    old = [p for p in folder.iterdir() if p.is_file()
+           and p.name.upper().startswith("IS_")
+           and p.suffix.lower() in IMAGE_SUFFIXES]
+    target, _ = _store_photo(src, folder, stem=f"IS_{sku}")
+    for p in old:
+        if p != target:
+            p.unlink()
+    verb = "Replaced the inspection sheet" if old else "Saved the inspection sheet"
+    return inspection_sheet(sku), f"{verb} as `normal_images/{sku}/{target.name}`."
+
+
 def available_skus() -> list[str]:
     """Every SKU with a golden folder or a fitted model.
 
@@ -1587,10 +1850,23 @@ def sku_summary(sku: str) -> str:
     )
 
 
+def _sku_image_dirs(sku: str) -> list[Path]:
+    """The photo folders a part has, one per role, created together on Add.
+
+    Creating all four up front means each is there to drop photos into from
+    Explorer, rather than appearing only once the matching tab first saves.
+    """
+    return [NG_DIR / sku, GOLDEN_DIR / sku, OK_DIR / sku, TEST_DIR / sku]
+
+
 def _sku_paths(sku: str) -> list[Path]:
-    """Everything on disk belonging to one SKU."""
-    return [GOLDEN_DIR / sku, TEST_DIR / sku, MODEL_DIR / sku,
-            DATA_DIR / "labels" / f"{sku}.csv"]
+    """Everything on disk belonging to one SKU -- what Delete removes.
+
+    The known-good and known-bad folders are part of it: left behind, they
+    would be silently inherited by a new part added under the same number.
+    """
+    return _sku_image_dirs(sku) + [MODEL_DIR / sku,
+                                   DATA_DIR / "labels" / f"{sku}.csv"]
 
 
 def _refresh_skus(selected: str | None = None):
@@ -1601,41 +1877,55 @@ def _refresh_skus(selected: str | None = None):
 
 
 def do_sku_create(new_sku, state):
-    """Create an empty SKU: a golden folder is all a new part needs to start."""
+    """Create an empty SKU: a golden folder is all a new part needs to start.
+
+    Returns exactly one value per output wired in `build_ui` -- the part
+    picker, the "saving to part" box, the status strip and the entry field.
+    This used to return six, from when there were three pickers; Gradio drops
+    extras silently, so the picker's choices landed on the Textbox and every
+    Add crashed after creating the folders.
+    """
     name = (new_sku or "").strip()
     if not name:
-        return (gr.update(), gr.update(), gr.update(), gr.update(),
-                "Enter a part number first.", gr.update())
+        return (gr.update(), gr.update(), "Enter a part number first.",
+                gr.update())
     # Keep it a safe single path segment: these names become directories.
     if any(c in name for c in '/\\:*?"<>|') or name in (".", ".."):
-        return (gr.update(), gr.update(), gr.update(), gr.update(),
+        return (gr.update(), gr.update(),
                 f"`{name}` is not a usable folder name.", gr.update())
     if name in available_skus():
-        return (gr.update(), gr.update(), gr.update(), gr.update(),
+        return (gr.update(), gr.update(),
                 f"SKU **{name}** already exists — pick it from the list.",
                 gr.update())
 
-    (GOLDEN_DIR / name).mkdir(parents=True, exist_ok=True)
-    (TEST_DIR / name).mkdir(parents=True, exist_ok=True)
+    for folder in _sku_image_dirs(name):
+        folder.mkdir(parents=True, exist_ok=True)
     skus, value = _refresh_skus(name)
-    msg = (f"Created **{name}**.\n\n"
-           f"Next: upload golden images below and **Fit subspace**, then "
-           f"define its checks in step 2. Uploaded images are copied into "
-           f"`normal_images/{name}/` when you save.")
-    return (gr.update(choices=skus, value=value),
-            gr.update(choices=skus, value=value),
-            gr.update(choices=skus, value=value),
-            gr.update(value=value), msg, gr.update(value=""))
+    msg = (f"Created **{name}** with empty photo folders, ready to fill:\n\n"
+           f"- `normal_images/{name}/` — golden photos of good parts "
+           f"(step 1)\n"
+           f"- `ok_images/{name}/` — known-good parts, for tuning (step 3)\n"
+           f"- `ng_images/{name}/` — known-bad parts, for tuning (step 3)\n"
+           f"- `test_images/{name}/` — parts to inspect\n\n"
+           f"Copy photos straight into these folders, or upload them in each "
+           f"step. Then **Fit subspace** in step 1.")
+    return (gr.update(choices=skus, value=value), gr.update(value=value),
+            msg, gr.update(value=""))
 
 
 def do_sku_delete(sku, confirm, state):
-    """Delete a SKU and everything belonging to it. Guarded by a checkbox."""
+    """Delete a SKU and everything belonging to it. Guarded by a checkbox.
+
+    Returns one value per wired output: the part picker, the "saving to part"
+    box and the status line. It used to return five, so the warning below was
+    the value Gradio dropped, and a confirmed delete crashed after removing
+    the files.
+    """
     if not sku:
-        return (gr.update(), gr.update(), gr.update(), gr.update(),
-                "No SKU selected.")
+        return gr.update(), gr.update(), "No SKU selected."
     if not confirm:
         targets = "\n".join(f"- `{p}`" for p in _sku_paths(sku) if p.exists())
-        return (gr.update(), gr.update(), gr.update(), gr.update(),
+        return (gr.update(), gr.update(),
                 f"**This permanently deletes {sku}**, including:\n\n{targets}"
                 f"\n\nTick *yes, delete it* and press the button again.")
 
@@ -1649,14 +1939,11 @@ def do_sku_delete(sku, confirm, state):
             shutil.rmtree(p) if p.is_dir() else p.unlink()
             removed.append(str(p))
         except OSError as exc:
-            return (gr.update(), gr.update(), gr.update(), gr.update(),
-                    f"Could not remove `{p}`: {exc}")
+            return gr.update(), gr.update(), f"Could not remove `{p}`: {exc}"
 
     skus, value = _refresh_skus(None)
     listing = "\n".join(f"- `{r}`" for r in removed)
     return (gr.update(choices=skus, value=value),
-            gr.update(choices=skus, value=value),
-            gr.update(choices=skus, value=value),
             gr.update(value=value or ""),
             f"Deleted **{sku}**:\n\n{listing}")
 
@@ -1674,31 +1961,19 @@ def do_sku_import(files, sku):
     if not paths:
         return "No uploaded images to save."
 
-    import shutil
-
     dest = GOLDEN_DIR / sku
     dest.mkdir(parents=True, exist_ok=True)
     copied, replaced, unchanged = [], [], []
     for p in paths:
         if not p.exists():
             continue
-        target = dest / p.name
-        if target.exists():
-            # Gradio serves preloaded files from its own temp directory, so
-            # "same path" is not enough to recognise a file that is already
-            # here -- compare size and bytes, or every save re-copies the
-            # part's own images over themselves and reports it as new work.
-            same = (target.resolve() == p.resolve()
-                    or (target.stat().st_size == p.stat().st_size
-                        and target.read_bytes() == p.read_bytes()))
-            if same:
-                unchanged.append(p.name)
-                continue
-            shutil.copy2(p, target)
-            replaced.append(p.name)
-            continue
-        shutil.copy2(p, target)
-        copied.append(p.name)
+        # Gradio serves preloaded files from its own temp directory, so "same
+        # path" is not enough to recognise a file already here -- _store_photo
+        # compares bytes, or every save would re-copy the part's own images
+        # over themselves and report it as new work.
+        target, status = _store_photo(p, dest)
+        {"same": unchanged, "replaced": replaced,
+         "added": copied}[status].append(target.name)
 
     parts = []
     if copied:
@@ -1785,7 +2060,7 @@ def build_ui():
                     # empty at launch while the summary above says 6 images.
                     _first_golden = load_examples(skus[0], "golden") if skus else []
                     ref_files = gr.File(file_count="multiple",
-                                        file_types=["image"],
+                                        file_types=UPLOAD_TYPES,
                                         label="normal / golden images",
                                         value=_first_golden or None)
                     ref_gallery = gr.Gallery(label="uploaded", columns=6,
@@ -1808,7 +2083,13 @@ def build_ui():
                         "station may reject on — anything not on it is out of "
                         "scope."
                     )
-                    sheet_btn = gr.Button("show inspection sheet")
+                    with gr.Row():
+                        sheet_btn = gr.Button("show inspection sheet")
+                        # Saved as normal_images/<part>/IS_<part>.*, so a new
+                        # part's sheet never has to be copied in by hand.
+                        sheet_upload = gr.UploadButton(
+                            "upload inspection sheet", file_types=UPLOAD_TYPES,
+                            file_count="single", type="filepath")
                     # Defaults to ROI mode: it is what production does, and it
                     # is what this tab is for. Defaulting to whole-part meant
                     # boxes drawn here were then ignored by the fit and by
@@ -1851,23 +2132,29 @@ def build_ui():
                     # The single editor for everything about a check. Typing
                     # a coordinate redraws the box immediately, so the numbers
                     # and the picture never disagree.
+                    # One row per check. `shape check` is decided by the app
+                    # (is there an outline in the box?) and shown, not asked:
+                    # nobody drawing a box should need to know the two kinds.
                     roi_table = gr.Dataframe(
-                        headers=["id", "type", "x", "y", "w", "h",
+                        headers=["check", "x", "y", "w", "h", "shape check",
                                  "description (human read only, "
                                  "not used by the model)"],
-                        datatype=["str", "str", "number", "number",
-                                  "number", "number", "str"],
+                        datatype=["str", "number", "number", "number",
+                                  "number", "str", "str"],
                         column_count=(7, "fixed"),
-                        label="checks — every column is editable; the box "
-                              "redraws as you type",
+                        static_columns=[5],
+                        label="checks — edit the name, box or description; "
+                              "the box redraws as you type",
                         interactive=True, wrap=True,
                     )
                     gr.Markdown(
-                        "Draw a box on the reference to add a row, then set "
-                        "its **id**, **type** (`appearance` or `geometry`) "
-                        "and description here. Editing **x / y / w / h** "
-                        "moves the box straight away. Delete a row with the "
-                        "table's own row controls."
+                        "Draw one box around each item on the inspection "
+                        "sheet, then give it a **name** here. Editing "
+                        "**x / y / w / h** moves the box straight away. "
+                        "**shape check** is set automatically: *yes* when the "
+                        "part's outline crosses the box, so a missing or bent "
+                        "feature is caught too. Delete a row with the table's "
+                        "own row controls."
                     )
 
                     with gr.Row():
@@ -1915,7 +2202,7 @@ def build_ui():
                         "1 and 2 first."
                     )
                     ng_files = gr.File(
-                        file_count="multiple", file_types=["image"],
+                        file_count="multiple", file_types=UPLOAD_TYPES,
                         label="known-bad parts (NG) — parts that fail a check "
                               "on the inspection sheet",
                         height=120)
@@ -1935,7 +2222,7 @@ def build_ui():
                         "it turns the suggestion into a measured window."
                     )
                     ok_files = gr.File(
-                        file_count="multiple", file_types=["image"],
+                        file_count="multiple", file_types=UPLOAD_TYPES,
                         label="known-good parts (OK) — parts that pass every "
                               "check on the inspection sheet",
                         height=120)
@@ -2072,7 +2359,7 @@ def build_ui():
                 # directly; picking from the gallery sets it too -- previously
                 # the gallery was decorative and clicking it did nothing.
                 test_file = gr.File(
-                    file_types=["image"], label="part to inspect",
+                    file_types=UPLOAD_TYPES, label="part to inspect",
                     height=120)
                 load_test = gr.Button(
                     "…or load this part's saved test images")
@@ -2150,8 +2437,9 @@ def build_ui():
 
         thr_apply_btn.click(_thr_apply, [state, sku_pick, threshold], threshold)
 
-        ref_files.change(lambda fs: [f if isinstance(f, str) else f.name
-                                     for f in (fs or [])],
+        ref_files.change(lambda fs: _viewable(
+                             [f if isinstance(f, str) else f.name
+                              for f in (fs or [])]),
                          ref_files, ref_gallery)
 
         # --- SKU management -------------------------------------------------
@@ -2177,6 +2465,11 @@ def build_ui():
         new_sku_box.submit(do_sku_create, [new_sku_box, state], _add_outputs)
         sku_save_imgs.click(do_sku_import, [ref_files, sku_pick],
                             sku_import_status).then(
+                                # Point the list at what was saved: HEIC
+                                # uploads are now JPEGs on disk, and the next
+                                # fit should use exactly those files.
+                                lambda s: load_examples(s, "golden") or None,
+                                sku_pick, ref_files).then(
                                 sku_summary, sku_pick, sku_info).then(
                                     # Step 3's readiness line counts golden
                                     # images too, so saving them here changes
@@ -2188,6 +2481,9 @@ def build_ui():
 
         def _test_list(sku):
             return load_examples(sku, "test") if sku else []
+
+        def _test_view(sku):
+            return _viewable(_test_list(sku))
 
         def _test_gallery_label(sku):
             """Say how many saved test images this part has.
@@ -2205,11 +2501,11 @@ def build_ui():
                 label=f"saved test images — {n} for this part, click one to "
                       f"inspect it")
 
-        load_test.click(_test_list, sku_pick, test_gallery)
+        load_test.click(_test_view, sku_pick, test_gallery)
         # Loaded up front and on every part switch, like the NG and OK
         # galleries. Behind a button it looked empty until pressed, and after
         # switching parts it kept showing the previous part's images.
-        for _fn, _out in ((_test_list, test_gallery),
+        for _fn, _out in ((_test_view, test_gallery),
                           (_test_gallery_label, test_gallery)):
             app.load(_fn, sku_pick, _out)
             sku_pick.change(_fn, sku_pick, _out)
@@ -2223,6 +2519,8 @@ def build_ui():
 
         test_gallery.select(_pick_test, sku_pick, test_file)
         sheet_btn.click(inspection_sheet, sku_pick, sheet_img)
+        sheet_upload.upload(do_sheet_upload, [sheet_upload, sku_pick],
+                            [sheet_img, roi_status])
 
         fit_btn.click(
             do_fit,
@@ -2251,16 +2549,18 @@ def build_ui():
                            [state, roi_save_status]).then(
                                sku_summary, sku_pick, sku_info)
         # Writes nothing: applying means re-fitting and saving, both explicit.
-        ng_files.change(lambda fs: [f if isinstance(f, str) else f.name
-                                    for f in (fs or [])], ng_files, ng_gallery)
+        ng_files.change(lambda fs: _viewable(
+                            [f if isinstance(f, str) else f.name
+                             for f in (fs or [])]), ng_files, ng_gallery)
         ng_save_btn.click(do_ng_import, [ng_files, sku_pick],
-                          ng_status).then(_ng_list, sku_pick, ng_gallery).then(
+                          ng_status).then(_ng_view, sku_pick, ng_gallery).then(
                               _ng_gallery_label, sku_pick, ng_gallery).then(
                                   _tune_ready, sku_pick, tune_ready)
-        ok_files.change(lambda fs: [f if isinstance(f, str) else f.name
-                                    for f in (fs or [])], ok_files, ok_gallery)
+        ok_files.change(lambda fs: _viewable(
+                            [f if isinstance(f, str) else f.name
+                             for f in (fs or [])]), ok_files, ok_gallery)
         ok_save_btn.click(do_ok_import, [ok_files, sku_pick],
-                          ok_status).then(_ok_list, sku_pick, ok_gallery).then(
+                          ok_status).then(_ok_view, sku_pick, ok_gallery).then(
                               _ok_gallery_label, sku_pick, ok_gallery).then(
                                   _tune_ready, sku_pick, tune_ready)
 
@@ -2269,7 +2569,7 @@ def build_ui():
         # this they showed the previous part's photos -- or nothing at all --
         # while the measurement quietly used whatever was on disk, and photos
         # already in place looked like they still needed uploading.
-        for _fn, _out in ((_ng_list, ng_gallery), (_ok_list, ok_gallery),
+        for _fn, _out in ((_ng_view, ng_gallery), (_ok_view, ok_gallery),
                           (_ng_gallery_label, ng_gallery),
                           (_ok_gallery_label, ok_gallery),
                           (_tune_ready, tune_ready)):
@@ -2310,7 +2610,8 @@ def build_ui():
         # upload box and no sheet -- contradicting the summary right above it.
         def _initial(sku):
             imgs = load_examples(sku, "golden") if sku else []
-            return (imgs or None, imgs or None, inspection_sheet(sku),
+            return (imgs or None, _viewable(imgs) or None,
+                    inspection_sheet(sku),
                     sku_summary(sku), sku or "")
 
         app.load(_initial, sku_pick,

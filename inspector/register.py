@@ -18,7 +18,7 @@ from . import features as feat_mod
 from . import geometry as geom_mod
 from . import subspace as sub_mod
 from .config import GOLDEN_DIR, PipelineConfig
-from .pipeline import build_reference, load_image
+from .pipeline import IMAGE_SUFFIXES, build_reference, load_image
 from .roi import ROI, SKUConfig, model_path, patch_grid_box, sku_dir
 
 log = logging.getLogger(__name__)
@@ -52,12 +52,23 @@ def register_sku(
     ref_stats, ref_img, ref_mask, results = build_reference(images, cfg, sources)
     canvas = tuple(ref_stats["canvas_size"])
 
+    posed = [r for r in results if r.info.get("pose_rejected")]
+    if posed:
+        say("WARNING: left out " + ", ".join(
+            f"{Path(r.source).name} (overlap {r.info.get('iou', 0):.2f})"
+            for r in posed) +
+            f" -- the part is not lying like the other golden photos "
+            f"(needs {cfg.align.min_iou:.2f}). Retake them flat, as on the "
+            f"inspection sheet, or remove them.")
     usable = [r for r in results if r.aligned_valid_mask is not None
-              and r.aligned_valid_mask.max() > 0]
+              and r.aligned_valid_mask.max() > 0
+              and not r.info.get("pose_rejected")]
     if not usable:
         raise ValueError("no golden image survived preprocessing")
-    if len(usable) < len(results):
-        dropped = [Path(r.source).name for r in results if r not in usable]
+    # Pose rejections were already named above, with the reason.
+    dropped = [Path(r.source).name for r in results
+               if r not in usable and r not in posed]
+    if dropped:
         say(f"dropped {len(dropped)} unusable golden image(s): {dropped}")
 
     say(f"extracting DINOv2 {cfg.features.backbone} features")
@@ -120,36 +131,8 @@ def register_sku(
                 maha_maps, np.stack(vgrids), cfg.subspace.position_sigma_floor)
         pos_stats = stats
 
-    # Geometry nominals per geometry ROI, measured on the aligned golden masks.
-    geom_nominals = {}
-    for roi in (rois or []):
-        if roi.type != "geometry":
-            continue
-        measured = [geom_mod.measure_roi_geometry(r.aligned_part_mask, roi.box)
-                    for r in usable]
-        nominal = geom_mod.fit_nominal(measured)
-        geom_nominals[roi.id] = nominal
-
-        # A geometry ROI only means something where the silhouette has an edge
-        # to measure. Sitting on solid interior it fills the box on every
-        # golden part, so it can never catch a defect -- an embossed mark or a
-        # scratch does not move the outline -- yet it still fires whenever
-        # segmentation wobbles, failing a good part on a check that was
-        # measuring nothing. Cheap to leave in (~0.03 ms), but the false
-        # rejects are not cheap, so say so here where it can still be removed.
-        # Threshold set from the sample SKUs: a box straddling a real outline
-        # measures 0.40 (tab) or 0.62 (chamfered corner), while a box on flat
-        # interior measures 0.97 (the embossed RH mark). 0.95 sits clear of
-        # both, and the check is advisory -- it never blocks registration.
-        frac = nominal.get("area_frac", float("nan"))
-        if np.isfinite(frac) and (frac > 0.95 or frac < 0.05):
-            where = "solid part" if frac > 0.5 else "background"
-            say(f"WARNING: geometry ROI {roi.id!r} sits on flat {where} "
-                f"(area {100 * frac:.1f}% of its box on every golden part). "
-                f"The silhouette has no edge here, so this check cannot catch "
-                f"a defect -- it can only misfire on segmentation noise. If "
-                f"the check is a surface mark, delete this ROI and keep the "
-                f"appearance one.")
+    geom_nominals = measure_geometry_nominals(
+        rois, [r.aligned_part_mask for r in usable], say)
 
     # Golden score distribution: what "normal" looks like on this SKU, which
     # is what any sensible threshold has to be set against.
@@ -221,6 +204,14 @@ def save_registration(reg: dict, sku_cfg: SKUConfig | None = None) -> Path:
         "sources_json": json.dumps(reg["sources"]),
         "n_valid_patches": reg["n_valid_patches"],
     }
+    # The aligned golden outlines, so a box drawn or moved later can have its
+    # shape check measured from disk -- after a restart too -- instead of
+    # needing a re-fit. Stored 0/1: geometry only ever reads mask > 0, and a
+    # binary mask compresses to a few KB.
+    if reg.get("results"):
+        payload["golden_masks"] = np.stack(
+            [(r.aligned_part_mask > 0) for r in reg["results"]]
+        ).astype(np.uint8)
     if reg["position_stats"]:
         for key, st in reg["position_stats"].items():
             payload[f"pos_{key}_mean"] = st["mean"]
@@ -255,6 +246,85 @@ def save_registration(reg: dict, sku_cfg: SKUConfig | None = None) -> Path:
     return model_path(sku)
 
 
+def measure_geometry_nominals(rois, aligned_masks, say=None) -> dict:
+    """Nominal outline measurements per geometry ROI, from the golden masks.
+
+    Shared by a full fit and by `update_geometry_nominals`, so a box drawn
+    after fitting is measured exactly as the fit itself would measure it.
+    """
+    say = say or log.info
+    nominals = {}
+    for roi in (rois or []):
+        if roi.type != "geometry":
+            continue
+        nominal = geom_mod.fit_nominal(
+            [geom_mod.measure_roi_geometry(m, roi.box) for m in aligned_masks])
+        # The nominal only means something for this exact box. Recording it
+        # lets inspection refuse to compare a moved box against numbers
+        # measured somewhere else, instead of scoring noise until the re-fit.
+        nominal["box"] = [int(v) for v in roi.box]
+        nominals[roi.id] = nominal
+
+        # A geometry ROI only means something where the silhouette has an edge
+        # to measure. Sitting on solid interior it fills the box on every
+        # golden part, so it can never catch a defect -- an embossed mark or a
+        # scratch does not move the outline -- yet it still fires whenever
+        # segmentation wobbles, failing a good part on a check that was
+        # measuring nothing. Cheap to leave in (~0.03 ms), but the false
+        # rejects are not cheap, so say so here where it can still be removed.
+        # Threshold set from the sample SKUs: a box straddling a real outline
+        # measures 0.40 (tab) or 0.62 (chamfered corner), while a box on flat
+        # interior measures 0.97 (the embossed RH mark). 0.95 sits clear of
+        # both, and the check is advisory -- it never blocks registration.
+        frac = nominal.get("area_frac", float("nan"))
+        if np.isfinite(frac) and (frac > 0.95 or frac < 0.05):
+            where = "solid part" if frac > 0.5 else "background"
+            say(f"WARNING: geometry ROI {roi.id!r} sits on flat {where} "
+                f"(area {100 * frac:.1f}% of its box on every golden part). "
+                f"The silhouette has no edge here, so this check cannot catch "
+                f"a defect -- it can only misfire on segmentation noise. If "
+                f"the check is a surface mark, delete this ROI and keep the "
+                f"appearance one.")
+    return nominals
+
+
+def update_geometry_nominals(reg: dict, rois, say=None) -> bool:
+    """Measure shape checks for new or moved boxes without re-fitting.
+
+    Boxes are drawn on the canvas a fit produces, so a first-time setup used
+    to need fit -> draw -> fit again just to measure the outline inside the
+    boxes. The fit already aligned every golden photo, and the outline is all
+    a shape check needs, so it is measured from those here and written into
+    the saved model. The appearance model is untouched.
+
+    The outlines come from the fit held in memory, or from the saved model
+    (`golden_masks`), so this works after a restart too. Returns False --
+    changing nothing -- only for a model fitted before outlines were saved,
+    or when the saved model is from a different fit; a re-fit is the answer.
+    """
+    results = reg.get("results")
+    if results:
+        masks = [r.aligned_part_mask for r in results]
+    elif reg.get("golden_masks") is not None:
+        masks = list(reg["golden_masks"])
+    else:
+        return False
+    p = model_path(reg["sku"])
+    if not p.exists():
+        return False
+    with np.load(p, allow_pickle=False) as z:
+        saved = {k: z[k] for k in z.files}
+    # Only ever amend the fit these masks came from.
+    if json.loads(str(saved["sources_json"])) != list(reg["sources"]) or \
+            tuple(int(v) for v in saved["canvas_size"]) != tuple(reg["canvas_size"]):
+        return False
+    nominals = measure_geometry_nominals(rois, masks, say)
+    saved["geometry_nominals_json"] = np.array(json.dumps(nominals))
+    np.savez_compressed(p, **saved)
+    reg["geometry_nominals"] = nominals
+    return True
+
+
 def load_registration(sku: str) -> dict:
     """Load a saved SKU model."""
     p = model_path(sku)
@@ -287,6 +357,8 @@ def load_registration(sku: str) -> dict:
         "golden_scores": json.loads(str(z["golden_scores_json"])),
         "sources": json.loads(str(z["sources_json"])),
         "n_valid_patches": int(z["n_valid_patches"]),
+        # Absent from models fitted before the outlines were saved.
+        "golden_masks": z["golden_masks"] if "golden_masks" in z else None,
     }
 
 
@@ -318,7 +390,7 @@ def main() -> int:
     else:
         folder = GOLDEN_DIR / args.sku
         paths = [p for p in sorted(folder.glob("*"))
-                 if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp"}
+                 if p.suffix.lower() in IMAGE_SUFFIXES
                  and not p.name.startswith("IS_")]
     if not paths:
         print("no golden images found")

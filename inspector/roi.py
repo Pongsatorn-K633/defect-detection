@@ -11,6 +11,19 @@ from .config import MODEL_DIR
 
 WHOLE_PART = "whole_part"
 
+# One box drawn by the operator is one *check*, stored as up to two ROIs over
+# the same box: `<name>` scores the surface (appearance) and `<name>_geom` the
+# outline (geometry). They catch opposite failures -- a damaged feature versus
+# a missing or bent one -- but the person drawing the box should not have to
+# know that, so the editor and the result view show one box per check.
+#
+# Both use the box exactly as drawn. Padding the geometry box was measured on
+# SKU 8983864641 and only hurt: at +20% a missing wing scored 0.52 (passes)
+# instead of 1.19, and on the top-left corner a good part scored 4.61.
+GEOM_SUFFIX = "_geom"
+DEFAULT_TOLERANCE = {"area_pct": 10.0, "fill_ratio_pct": 12.0,
+                     "corner_angle_deg": 15.0}
+
 
 @dataclass
 class ROI:
@@ -172,6 +185,34 @@ class SKUConfig:
         """Configured ROIs, or the whole part if none are defined yet."""
         return [r.clip(self.canvas_size) for r in self.rois] or \
             [self.whole_part_roi()]
+
+
+def check_name(roi: ROI) -> str:
+    """The check an ROI belongs to: its id, minus the geometry suffix."""
+    if roi.type == "geometry" and roi.id.endswith(GEOM_SUFFIX):
+        return roi.id[:-len(GEOM_SUFFIX)]
+    return roi.id
+
+
+def group_checks(rois) -> list[tuple[str, ROI | None, ROI | None]]:
+    """`(name, appearance, geometry)` per check, in the order first seen.
+
+    Either half may be missing: a surface-only check has no geometry ROI, and
+    a hand-written sku.json can hold a geometry ROI on its own.
+    """
+    order, parts = [], {}
+    for roi in rois:
+        name = check_name(roi)
+        if name not in parts:
+            order.append(name)
+            parts[name] = [None, None]
+        parts[name][0 if roi.type == "appearance" else 1] = roi
+    return [(n, *parts[n]) for n in order]
+
+
+def check_box(app: ROI | None, geo: ROI | None):
+    """The box a check is drawn and edited as: the appearance box if any."""
+    return (app or geo).box
 
 
 def sku_dir(sku: str) -> Path:

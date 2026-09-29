@@ -22,7 +22,7 @@ from . import viz
 from .config import OUTPUT_DIR, TEST_DIR, PipelineConfig
 from .pipeline import PreprocessResult, load_image, preprocess
 from .register import load_registration
-from .roi import ROI, SKUConfig, patch_grid_box
+from .roi import ROI, SKUConfig, check_box, group_checks, patch_grid_box
 
 log = logging.getLogger(__name__)
 
@@ -132,6 +132,15 @@ def inspect_image(
                 out.rois.append(ROIResult(roi.id, roi.type, float("nan"), thr,
                                           True, "no nominal recorded"))
                 continue
+            # Nominals from before the box was recorded carry no "box" and are
+            # trusted as before; only a known mismatch is refused.
+            fitted_box = nominal.get("box")
+            if fitted_box is not None and \
+                    [int(v) for v in fitted_box] != [int(v) for v in roi.box]:
+                out.rois.append(ROIResult(
+                    roi.id, roi.type, float("nan"), 1.0, True,
+                    "box moved since the last fit -- re-fit to measure it"))
+                continue
             measured = geom_mod.measure_roi_geometry(pre.aligned_part_mask,
                                                      roi.box)
             tol = roi.tolerance or {
@@ -190,10 +199,21 @@ def render_result(res: InspectionResult, reg: dict, sku_cfg: SKUConfig,
         # bad, light up identically.
         heat = viz.heatmap_overlay(res.pre.aligned_image, masked,
                                    vmin=0.0, vmax=max(thr * 2.0, 1e-6))
-        scores = {r.id: r.score for r in res.rois}
-        heat = viz.draw_rois(heat, [r.to_dict() for r in
-                                    (sku_cfg.effective_rois() if sku_cfg else [])],
-                             scores, thr)
+        # One box per check, red if either half failed. Colouring each ROI by
+        # `score > thr` compared a geometry score (limit 1.0) against the
+        # appearance threshold, so a failed shape check was drawn green.
+        by_id = {r.id: r for r in res.rois}
+        for name, app, geo in group_checks(
+                sku_cfg.effective_rois() if sku_cfg else []):
+            halves = [by_id[r.id] for r in (app, geo) if r and r.id in by_id]
+            color = (0, 200, 0) if all(h.passed for h in halves) \
+                else (0, 0, 255)
+            x, y, w, h = check_box(app, geo)
+            cv2.rectangle(heat, (x, y), (x + w, y + h), color, 2)
+            lead = halves[0] if halves else None
+            cap = name if lead is None or not np.isfinite(lead.score) \
+                else f"{name} {lead.score:.1f}"
+            heat = viz.label(heat, cap, (x + 3, max(y - 6, 14)), color, 0.5)
         tiles.append((heat, f"{res.verdict}  max {res.max_score:.2f}"))
 
     cv2.imwrite(str(out_dir / f"{stem}_stages.png"), viz.grid(tiles, cols=5))
