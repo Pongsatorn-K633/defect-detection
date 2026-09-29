@@ -30,7 +30,7 @@ from inspector.config import (DATA_DIR, GOLDEN_DIR, MODEL_DIR, NG_DIR,
                               TEST_DIR,
                               PipelineConfig, fit_signature)
 from inspector.inspect import inspect_image
-from inspector.pipeline import load_image
+from inspector.pipeline import IMAGE_SUFFIXES, load_image
 from inspector.register import (load_registration, register_sku,
                                 save_registration)
 from inspector.roi import ROI, SKUConfig
@@ -693,7 +693,7 @@ def _labelled_list(root, sku):
     if not folder or not folder.exists():
         return []
     return [str(x) for x in sorted(folder.iterdir())
-            if x.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp"}]
+            if x.suffix.lower() in IMAGE_SUFFIXES]
 
 
 def _ng_list(sku):
@@ -902,7 +902,7 @@ def do_tune(files, sku, state, progress=gr.Progress()):
     paths = [Path(f if isinstance(f, str) else f.name) for f in (files or [])]
     if not paths and sku:
         paths = [p for p in sorted((GOLDEN_DIR / sku).glob("*"))
-                 if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp"}
+                 if p.suffix.lower() in IMAGE_SUFFIXES
                  and not p.name.startswith("IS_")]
     if len(paths) < 2:
         return gr.update(), gr.update(), ("**Do step 1 first** — at least 2 "
@@ -1388,7 +1388,7 @@ def do_evaluate(sku, roi_mode, roi_text, threshold, state,
 
     folder = TEST_DIR / sku
     paths = [p for p in sorted(folder.glob("*"))
-             if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp"}
+             if p.suffix.lower() in IMAGE_SUFFIXES
              and p.name in labels]
     if not paths:
         return (state, f"No labelled images found in {folder}.",
@@ -1497,7 +1497,7 @@ def load_examples(sku, which):
     if not folder.exists():
         return []
     return [str(p) for p in sorted(folder.iterdir())
-            if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp"}
+            if p.suffix.lower() in IMAGE_SUFFIXES
             and not p.name.upper().startswith("IS_")]
 
 
@@ -1517,8 +1517,7 @@ def inspection_sheet(sku: str):
     if not folder.exists():
         return None
     for p in sorted(folder.iterdir()):
-        if p.name.upper().startswith("IS_") and p.suffix.lower() in {
-                ".jpg", ".jpeg", ".png", ".bmp"}:
+        if p.name.upper().startswith("IS_") and p.suffix.lower() in IMAGE_SUFFIXES:
             img = load_image(p)
             return _to_rgb(img) if img is not None else None
     return None

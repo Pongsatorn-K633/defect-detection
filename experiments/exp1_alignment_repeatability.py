@@ -19,7 +19,7 @@ from experiments.common import (gather, golden_paths, load_all, out_dir,
                                 print_table, test_paths)
 from inspector import viz
 from inspector.config import PipelineConfig
-from inspector.pipeline import build_reference, preprocess
+from inspector.pipeline import build_reference, load_image, preprocess
 
 PASS_IOU = 0.95
 PASS_DRIFT = 5.0
@@ -47,8 +47,7 @@ def run(sku: str, cfg: PipelineConfig, include_test: bool = True) -> dict:
 
     if include_test:
         for p in test_paths(sku):
-            r = preprocess(cv2.imdecode(np.fromfile(str(p), np.uint8),
-                                        cv2.IMREAD_COLOR),
+            r = preprocess(load_image(p),
                            cfg, ref_stats=ref_stats, ref_mask=ref_mask,
                            ref_image=ref_img, source=p.name)
             rows.append({

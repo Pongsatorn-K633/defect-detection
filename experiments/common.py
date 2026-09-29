@@ -9,9 +9,9 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from inspector.config import GOLDEN_DIR, OUTPUT_DIR, TEST_DIR  # noqa: E402
-from inspector.pipeline import load_image  # noqa: E402
+from inspector.pipeline import IMAGE_SUFFIXES, load_image  # noqa: E402
 
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp"}
+IMAGE_EXTS = IMAGE_SUFFIXES
 
 
 def gather(folder: Path, skip_sheets: bool = True) -> list[Path]:

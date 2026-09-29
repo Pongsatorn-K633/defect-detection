@@ -36,4 +36,7 @@ dependencies:
       # Imaging, IO and the experimentation UI.
       - opencv-python>=4.9
       - pillow
+      # HEIC/HEIF decoding. Phone cameras (iPhone especially) default to HEIC,
+      # which the opencv-python wheels carry no codec for.
+      - pillow-heif
       - gradio>=4.44

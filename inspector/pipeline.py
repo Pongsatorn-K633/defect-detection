@@ -20,6 +20,25 @@ from .config import PipelineConfig
 
 log = logging.getLogger(__name__)
 
+# iPhones shoot HEIC by default, so parts photographed on a phone arrive in a
+# format OpenCV's prebuilt wheels carry no codec for. pillow-heif teaches Pillow
+# to open them; `load_image` then falls back to Pillow whenever cv2 declines.
+# Optional on purpose: an environment without it keeps working for JPEG/PNG.
+try:
+    import pillow_heif
+
+    pillow_heif.register_heif_opener()
+    HEIF_OK = True
+except ImportError:  # noqa: BLE001 - HEIC support is a nice-to-have
+    HEIF_OK = False
+
+# Every extension the pipeline can actually decode. Folder scans filter on this
+# rather than each keeping its own copy, so adding a format stays a one-line
+# change here instead of five edits that drift apart.
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp"}
+if HEIF_OK:
+    IMAGE_SUFFIXES |= {".heic", ".heif"}
+
 
 @dataclass
 class PreprocessResult:
@@ -58,9 +77,12 @@ def load_image(path: str | Path) -> np.ndarray:
     data = np.fromfile(path, dtype=np.uint8)  # unicode-safe on Windows
     img = cv2.imdecode(data, cv2.IMREAD_COLOR)
     if img is None:
-        raise ValueError(f"could not read image: {path}")
+        # HEIC and anything else this OpenCV build has no codec for. Pillow
+        # applies the orientation itself here, so this path returns early
+        # rather than falling through to the EXIF rotation below.
+        return _load_via_pillow(path)
     try:
-        from PIL import Image, ImageOps
+        from PIL import Image
 
         with Image.open(path) as pil:
             exif = pil.getexif().get(274, 1)
@@ -72,6 +94,30 @@ def load_image(path: str | Path) -> np.ndarray:
     except Exception:  # noqa: BLE001 - EXIF is best effort
         pass
     return img
+
+
+def _load_via_pillow(path: str) -> np.ndarray:
+    """Decode with Pillow and hand back BGR, the way cv2.imread would.
+
+    `exif_transpose` covers all eight orientations rather than the three
+    rotations handled above -- Pillow can mirror, which cv2.rotate cannot --
+    and it is the only orientation step applied on this path.
+    """
+    try:
+        from PIL import Image, ImageOps
+
+        with Image.open(path) as pil:
+            pil = ImageOps.exif_transpose(pil)
+            rgb = np.asarray(pil.convert("RGB"))
+    except Exception as exc:  # noqa: BLE001 - report as an unreadable image
+        suffix = Path(path).suffix.lower()
+        if suffix in {".heic", ".heif"} and not HEIF_OK:
+            raise ValueError(
+                f"could not read image: {path}\n"
+                f"HEIC support needs pillow-heif: pip install pillow-heif"
+            ) from exc
+        raise ValueError(f"could not read image: {path}") from exc
+    return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
 
 def preprocess(
