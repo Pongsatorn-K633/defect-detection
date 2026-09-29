@@ -72,36 +72,26 @@ def load_image(path: str | Path) -> np.ndarray:
     Phone photos routinely carry a rotation flag; ignoring it feeds the
     pipeline a sideways part and alignment then has to undo a 90-degree error
     it was never designed for.
+
+    `cv2.IMREAD_COLOR` already applies the EXIF orientation -- all eight
+    values, mirrors included. Rotating again on top of it is what this
+    function used to do, and it turned tagged phone photos sideways or upside
+    down. Do not add a second orientation step here.
     """
     path = str(path)
     data = np.fromfile(path, dtype=np.uint8)  # unicode-safe on Windows
     img = cv2.imdecode(data, cv2.IMREAD_COLOR)
     if img is None:
-        # HEIC and anything else this OpenCV build has no codec for. Pillow
-        # applies the orientation itself here, so this path returns early
-        # rather than falling through to the EXIF rotation below.
+        # HEIC and anything else this OpenCV build has no codec for.
         return _load_via_pillow(path)
-    try:
-        from PIL import Image
-
-        with Image.open(path) as pil:
-            exif = pil.getexif().get(274, 1)
-        if exif and exif != 1:
-            rot = {3: cv2.ROTATE_180, 6: cv2.ROTATE_90_CLOCKWISE,
-                   8: cv2.ROTATE_90_COUNTERCLOCKWISE}.get(exif)
-            if rot is not None:
-                img = cv2.rotate(img, rot)
-    except Exception:  # noqa: BLE001 - EXIF is best effort
-        pass
     return img
 
 
 def _load_via_pillow(path: str) -> np.ndarray:
     """Decode with Pillow and hand back BGR, the way cv2.imread would.
 
-    `exif_transpose` covers all eight orientations rather than the three
-    rotations handled above -- Pillow can mirror, which cv2.rotate cannot --
-    and it is the only orientation step applied on this path.
+    `exif_transpose` applies the orientation tag, matching what cv2 does on
+    the main path, so both paths hand back an upright image.
     """
     try:
         from PIL import Image, ImageOps
