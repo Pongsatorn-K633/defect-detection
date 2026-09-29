@@ -1722,8 +1722,16 @@ def do_inspect(test_file, roi_mode, roi_text, threshold, state, sku=None):
                       f"indistinguishable from a normal part."]
 
     align = res.pre.info
+    stages_t = align.get("timing", {})
+    # Per stage, so a slow photo shows which step took the time -- in the box
+    # and in the terminal, where a run of photos can be compared.
+    breakdown = [f"  {name:<18} {sec * 1000:6.0f} ms"
+                 for name, sec in stages_t.items()]
+    print(f"[inspect] {Path(path).name}: {infer_s:.2f} s = " + ", ".join(
+        f"{n} {s:.2f}" for n, s in stages_t.items()), flush=True)
     timing = "\n".join([
         f"Inference time   {infer_s * 1000:.0f} ms",
+        *breakdown,
         f"Fit time         {state.get('fit_seconds', 0):.1f} s (cached, not rerun)",
         f"Alignment IoU    {align.get('iou', float('nan')):.3f}",
         f"Centroid drift   {align.get('centroid_drift_px', float('nan')):.2f} px",
@@ -3058,6 +3066,50 @@ def build_ui():
     return app
 
 
+def _opt_out_of_power_throttling():
+    """Ask Windows not to run this process in efficiency mode (EcoQoS).
+
+    On a hybrid CPU (e.g. i9-13900H: 6 performance + 8 efficiency cores)
+    Windows 11 throttles processes it considers background -- and the server
+    counts as background while the operator works in the browser. It then
+    runs on efficiency cores at low clock: every inspection stage, CPU and GPU
+    alike, measured 2-4x slower in the app (7.8 s) than the same code run
+    directly (2.2 s). Opting out is the documented per-process switch; it
+    changes nothing on other platforms.
+    """
+    import sys
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _State(ctypes.Structure):
+            _fields_ = [("Version", wintypes.ULONG),
+                        ("ControlMask", wintypes.ULONG),
+                        ("StateMask", wintypes.ULONG)]
+
+        EXECUTION_SPEED = 0x1          # PROCESS_POWER_THROTTLING_EXECUTION_SPEED
+        state = _State(1, EXECUTION_SPEED, 0)   # control it, and turn it off
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        # Declared, or ctypes truncates the 64-bit pseudo-handle to 32 bits
+        # and Windows rejects the call.
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        k32.SetProcessInformation.argtypes = [
+            wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        k32.SetProcessInformation.restype = wintypes.BOOL
+        ok = k32.SetProcessInformation(k32.GetCurrentProcess(),
+                                       4,       # ProcessPowerThrottling
+                                       ctypes.byref(state),
+                                       ctypes.sizeof(state))
+        print("Windows efficiency-mode throttling: "
+              + ("off for this server." if ok else
+                 f"could not be changed (error {ctypes.get_last_error()})."),
+              flush=True)
+    except Exception:  # noqa: BLE001 - a speed hint, never a startup blocker
+        log.exception("could not opt out of power throttling")
+
+
 def _preload_models():
     """Load every model the saved parts use, in the background at startup.
 
@@ -3101,5 +3153,6 @@ if __name__ == "__main__":
     print("Loading models in the background; the page is usable now and "
           "the first action waits for them if it gets there first.\n",
           flush=True)
+    _opt_out_of_power_throttling()
     threading.Thread(target=_preload_models, daemon=True).start()
     build_ui().launch(css=UI_CSS)

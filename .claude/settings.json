@@ -212,7 +212,8 @@
       "Bash(F=/c/Users/user/miniconda3/envs/defect-detection/Lib/site-packages/gradio/templates/frontend/assets/Gallery-gDhqSXoB.js; grep -o \".\\\\{200\\\\}z\\(\\)&&.\\\\{200\\\\}\\\\|.\\\\{150\\\\}z\\(\\)?.\\\\{150\\\\}\\\\|.\\\\{150\\\\}&&z\\(\\).\\\\{150\\\\}\" $F | head -5)",
       "Bash(grep -n \"\\\\[state\\\\b\\\\|, state\\\\]\\\\|state,$\\\\|\\\\[state,\" demo.py)",
       "Bash(grep -n '    lines = \\\\[f\"### {res.verdict}\", \"\"\\\\]' demo.py)",
-      "Bash(powershell -NoProfile -Command \"\\(Get-Counter '\\\\Processor Information\\(_Total\\)\\\\% Processor Performance'\\).CounterSamples.CookedValue\")"
+      "Bash(powershell -NoProfile -Command \"\\(Get-Counter '\\\\Processor Information\\(_Total\\)\\\\% Processor Performance'\\).CounterSamples.CookedValue\")",
+      "PowerShell($p = Get-Process python -ErrorAction SilentlyContinue | Sort-Object StartTime -Descending | Select-Object -First 1; \"app pid $\\($p.Id\\)  priority: $\\($p.PriorityClass\\)  affinity mask: $\\($p.ProcessorAffinity\\)\"; $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1; \"CPU: $\\($cpu.Name\\)  cores: $\\($cpu.NumberOfCores\\)  logical: $\\($cpu.NumberOfLogicalProcessors\\)\"; powercfg /getactivescheme; \"--- power throttling settings for python \\(if any\\):\"; powercfg /powerthrottling list 2>$null)"
     ],
     "additionalDirectories": [
       "c:\\Users\\user\\Documents\\VScode\\defect-detection",

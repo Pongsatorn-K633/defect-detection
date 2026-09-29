@@ -8,6 +8,7 @@ is enforced structurally here: this is the only implementation, and both
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -128,8 +129,19 @@ def preprocess(
     # so this is where a cancel takes effect -- within about one photo.
     cancel.check()
     res = PreprocessResult(source=source, image=image)
+    # Seconds per stage, so a slow inspection says where it went instead of
+    # only how long it took in total.
+    timing = res.info.setdefault("timing", {})
+    t = time.perf_counter()
+
+    def lap(name):
+        nonlocal t
+        now = time.perf_counter()
+        timing[name] = timing.get(name, 0.0) + now - t
+        t = now
 
     part = segment.segment_part(image, cfg.segment)
+    lap("segment")
     res.part_mask = part
     if part.max() == 0:
         res.ok = False
@@ -138,6 +150,7 @@ def preprocess(
         return res
 
     res.info.update(segment.mask_stats(part))
+    lap("mask stats")
     if segment.touches_border(part, cfg.segment.border_margin_px):
         # Not scored as an anomaly: a clipped part is an invalid photo, and
         # calling it a defect would be the wrong message to the operator.
@@ -148,6 +161,7 @@ def preprocess(
     ink = inkmask.blue_ink_mask(image, cfg.ink)
     res.ink_mask = ink
     res.info["ink_fraction"] = inkmask.ink_fraction(part, ink)
+    lap("ink mask")
 
     if not cfg.align.enabled:
         # Alignment-off comparison mode: pad the original into a fixed canvas
@@ -175,9 +189,11 @@ def preprocess(
 
     M, sim_info = align_mod.similarity_to_canonical(part, ref_stats, ref_mask)
     res.info.update(sim_info)
+    lap("rotation search")
 
     aligned_img = align_mod.warp_image(image, M, canvas)
     aligned_part = align_mod.warp_image(part, M, canvas, nearest=True)
+    lap("warp")
 
     # Homography refinement needs something to refine against.
     if ref_image is not None and ref_mask is not None and cfg.align.refine_homography:
@@ -185,6 +201,7 @@ def preprocess(
             aligned_img, ref_image, aligned_part, ref_mask, cfg.align
         )
         res.info.update(ecc_info)
+        lap("fine align (ECC)")
         if ecc_info.get("ecc_ok"):
             M_full = align_mod.compose(M, H)
             aligned_img = align_mod.warp_image(image, M_full, canvas)
@@ -192,6 +209,7 @@ def preprocess(
             M = M_full
 
     aligned_ink = align_mod.warp_image(ink, M, canvas, nearest=True)
+    lap("warp")
 
     res.aligned_image = aligned_img
     res.aligned_part_mask = aligned_part
@@ -203,6 +221,7 @@ def preprocess(
 
     if ref_mask is not None:
         res.info.update(align_mod.alignment_quality(aligned_part, ref_mask))
+        lap("pose check")
         iou = res.info.get("iou", 1.0)
         if iou < cfg.align.min_iou:
             # A different pose, not a defect: scoring it would compare the

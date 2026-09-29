@@ -91,7 +91,11 @@ def inspect_image(
         out.inference_seconds = time.time() - t0
         return out
 
+    timing = pre.info.setdefault("timing", {})
+    t = time.perf_counter()
     fmap = feat_mod.extract_patch_features(pre.aligned_image, cfg.features)
+    timing["features (DINOv2)"] = time.perf_counter() - t
+    t = time.perf_counter()
     grid_h, grid_w = fmap.shape[:2]
     valid = feat_mod.patch_mask_from_pixel_mask(
         pre.aligned_valid_mask, grid_h, grid_w, cfg.features.patch_coverage
@@ -168,6 +172,7 @@ def inspect_image(
                                   f"{int(vsub.sum())} valid patches"))
 
     out.verdict = "FAIL" if any(not r.passed for r in out.rois) else "PASS"
+    timing["scoring"] = time.perf_counter() - t
 
     out.inference_seconds = time.time() - t0
     return out
