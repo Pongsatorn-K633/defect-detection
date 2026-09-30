@@ -278,7 +278,10 @@ def measure_geometry_nominals(rois, aligned_masks, say=None) -> dict:
     say = say or log.info
     nominals = {}
     for roi in (rois or []):
-        if roi.type != "geometry":
+        # A presence check is an absolute limit and needs no nominal; the
+        # flat-part warning below is also exactly wrong for it -- a spot that
+        # is solid on every good part is what "must be metal" checks.
+        if roi.type != "geometry" or geom_mod.is_presence(roi.tolerance):
             continue
         nominal = geom_mod.fit_nominal(
             [geom_mod.measure_roi_geometry(m, roi.box) for m in aligned_masks])

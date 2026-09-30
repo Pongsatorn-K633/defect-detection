@@ -49,6 +49,22 @@ def mask_moments(mask: np.ndarray) -> dict:
     }
 
 
+def upright_angle(mask: np.ndarray) -> float:
+    """Smallest rotation (radians) that squares the part's edges with the canvas.
+
+    The canonical frame keeps the part the way the golden photo shows it --
+    the way the inspection sheet shows it -- and only removes a slight skew.
+    The principal axis is no substitute: on a near-square part it is
+    arbitrary, and 898213-8750 (elongation 1.03) came out turned 65 degrees.
+    The minimum-area rectangle follows the straight edges instead, and the
+    snap to within 45 degrees never turns the part onto another side.
+    """
+    contours, _ = cv2.findContours((outline(mask) > 0).astype(np.uint8),
+                                   cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    rect_deg = cv2.minAreaRect(max(contours, key=cv2.contourArea))[2]
+    return float(np.radians((rect_deg + 45.0) % 90.0 - 45.0))
+
+
 def reference_stats(mask: np.ndarray, cfg: AlignConfig) -> dict:
     """Canonical-frame parameters, computed once per SKU from golden image 1.
 
@@ -60,7 +76,7 @@ def reference_stats(mask: np.ndarray, cfg: AlignConfig) -> dict:
     pts = np.column_stack([xs, ys]).astype(np.float32)
 
     c = np.array(mom["centroid"], np.float32)
-    a = mom["angle"]
+    a = upright_angle(mask)
     rot = np.array([[np.cos(-a), -np.sin(-a)],
                     [np.sin(-a), np.cos(-a)]], np.float32)
     local = (pts - c) @ rot.T
@@ -87,7 +103,7 @@ def reference_stats(mask: np.ndarray, cfg: AlignConfig) -> dict:
 
     return {
         "area": mom["area"],
-        "angle": mom["angle"],
+        "angle": a,
         "canvas_size": [canvas_w, canvas_h],
         "scale": float(scale),
         "extent": [ext_x, ext_y],
@@ -242,14 +258,17 @@ def _scale_for(mask, ref_stats, centroid, angle):
     return ref_stats["scale"] * ratio
 
 
-def similarity_to_canonical(mask, ref_stats, ref_mask=None):
+def similarity_to_canonical(mask, ref_stats, ref_mask=None, angle=None):
     """Full similarity step: moments, then a full rotation search when there
-    is a reference mask to compare against."""
+    is a reference mask to compare against. `angle` fixes the rotation
+    outright -- the image that defines the frame passes its own."""
     mom = mask_moments(mask)
     canvas = ref_stats["canvas_size"]
-    angle = mom["angle"]
     iou = None
-    if ref_mask is not None:
+    fixed = angle is not None
+    if not fixed:
+        angle = mom["angle"]
+    if ref_mask is not None and not fixed:
         angle, iou = search_rotation(mask, angle, ref_mask, ref_stats)
     scale = _scale_for(mask, ref_stats, mom["centroid"], angle)
     M = _similarity(mom["centroid"], angle, scale, canvas)

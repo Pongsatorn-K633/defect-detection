@@ -113,9 +113,6 @@ def inspect_image(
     out.score_map = maps["score"]
     out.valid_grid = valid
 
-    canvas = reg["canvas_size"]
-    default_thr = sku_cfg.threshold if sku_cfg else cfg.threshold
-
     # A threshold is a measurement against one fitted model, not a preference:
     # it is the gap between the worst passing part and the best failing one,
     # and those scores move when the model does. On SKU 8983864641 the usable
@@ -127,21 +124,68 @@ def inspect_image(
             "re-measure it against the known-bad parts or good parts may fail",
             sku_cfg.threshold, tuple(sku_cfg.threshold_grid), (grid_h, grid_w))
 
+    out.rois = score_checks(pre, maps["score"], valid, reg, sku_cfg, cfg)
+    out.verdict = "FAIL" if any(not r.passed for r in out.rois) else "PASS"
+    timing["scoring"] = time.perf_counter() - t
+
+    out.inference_seconds = time.time() - t0
+    return out
+
+
+def score_checks(pre: PreprocessResult, score_map: np.ndarray,
+                 valid: np.ndarray, reg: dict, sku_cfg: SKUConfig | None,
+                 cfg: PipelineConfig) -> list[ROIResult]:
+    """Every check's result for one aligned, scored part.
+
+    Split out of `inspect_image` so the box checker and the box search in the
+    app judge a box with exactly the code inspection uses, from score maps
+    computed once per photo.
+    """
+    canvas = reg["canvas_size"]
+    grid_h, grid_w = score_map.shape[:2]
+    default_thr = sku_cfg.threshold if sku_cfg else cfg.threshold
+    results = []
     for roi in (sku_cfg.effective_rois() if sku_cfg else []):
         thr = roi.threshold if roi.threshold is not None else default_thr
+
+        if roi.type == "geometry" and geom_mod.is_hole(roi.tolerance):
+            # Found by brightness on the photo, not on the mask: see
+            # `geometry.measure_hole`.
+            gray = getattr(pre, "aligned_gray", None)
+            if gray is None:
+                gray = cv2.cvtColor(pre.aligned_image, cv2.COLOR_BGR2GRAY)
+            area, elong = geom_mod.measure_hole_shape(gray, roi.box)
+            score, violations = geom_mod.hole_result(area, roi.tolerance,
+                                                     elong)
+            results.append(ROIResult(roi.id, roi.type, score, 1.0,
+                                     not violations, "; ".join(violations),
+                                     {"hole_px": area, "hole_elong": elong}))
+            continue
+
+        if roi.type == "geometry" and geom_mod.is_presence(roi.tolerance):
+            # An absolute limit on how much of the box is metal: needs no
+            # nominal, so it is never "not measured".
+            measured = geom_mod.measure_roi_geometry(pre.aligned_part_mask,
+                                                     roi.box)
+            score, violations = geom_mod.presence_result(measured,
+                                                         roi.tolerance)
+            results.append(ROIResult(roi.id, roi.type, score, 1.0,
+                                     not violations, "; ".join(violations),
+                                     measured))
+            continue
 
         if roi.type == "geometry":
             nominal = reg["geometry_nominals"].get(roi.id)
             if not nominal:
-                out.rois.append(ROIResult(roi.id, roi.type, float("nan"), thr,
-                                          True, "no nominal recorded"))
+                results.append(ROIResult(roi.id, roi.type, float("nan"), thr,
+                                         True, "no nominal recorded"))
                 continue
             # Nominals from before the box was recorded carry no "box" and are
             # trusted as before; only a known mismatch is refused.
             fitted_box = nominal.get("box")
             if fitted_box is not None and \
                     [int(v) for v in fitted_box] != [int(v) for v in roi.box]:
-                out.rois.append(ROIResult(
+                results.append(ROIResult(
                     roi.id, roi.type, float("nan"), 1.0, True,
                     "box moved since the last fit -- re-fit to measure it"))
                 continue
@@ -154,28 +198,23 @@ def inspect_image(
             }
             violations = geom_mod.geometry_violations(measured, nominal, tol)
             score = geom_mod.geometry_score(measured, nominal, tol)
-            out.rois.append(ROIResult(
+            results.append(ROIResult(
                 roi.id, roi.type, score, 1.0, not violations,
                 "; ".join(violations), measured
             ))
             continue
 
         gy0, gy1, gx0, gx1 = patch_grid_box(roi.box, canvas, grid_h, grid_w)
-        sub = maps["score"][gy0:gy1, gx0:gx1]
+        sub = score_map[gy0:gy1, gx0:gx1]
         vsub = valid[gy0:gy1, gx0:gx1]
         if not vsub.any():
-            out.rois.append(ROIResult(roi.id, roi.type, float("nan"), thr, True,
-                                      "no valid patches in ROI"))
+            results.append(ROIResult(roi.id, roi.type, float("nan"), thr, True,
+                                     "no valid patches in ROI"))
             continue
         score = sub_mod.aggregate(sub, vsub, cfg.subspace.aggregation)
-        out.rois.append(ROIResult(roi.id, roi.type, score, thr, score <= thr,
-                                  f"{int(vsub.sum())} valid patches"))
-
-    out.verdict = "FAIL" if any(not r.passed for r in out.rois) else "PASS"
-    timing["scoring"] = time.perf_counter() - t
-
-    out.inference_seconds = time.time() - t0
-    return out
+        results.append(ROIResult(roi.id, roi.type, score, thr, score <= thr,
+                                 f"{int(vsub.sum())} valid patches"))
+    return results
 
 
 def render_result(res: InspectionResult, reg: dict, sku_cfg: SKUConfig,

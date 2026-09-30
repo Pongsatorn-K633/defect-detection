@@ -8,65 +8,45 @@
   "threshold": 20.6,
   "rois": [
     {
-      "id": "corner_top_left",
-      "type": "appearance",
-      "box": [
-        90,
-        90,
-        260,
-        220
-      ],
-      "note": "Inspection sheet check 2: top-left corner must be chamfered. IS sheet: มุมด้านบนซ้ายตัดเฉียง"
-    },
-    {
       "id": "corner_top_left_geom",
       "type": "geometry",
       "box": [
-        90,
-        90,
-        260,
-        220
+        137,
+        93,
+        86,
+        73
       ],
       "tolerance": {
-        "area_pct": 10.0,
-        "fill_ratio_pct": 12.0,
-        "corner_angle_deg": 15.0
+        "max_area_frac": 0.31
       },
-      "note": "Same region measured as a silhouette shape: a square corner fills more of the box than a chamfered one."
-    },
-    {
-      "id": "tab_top_right",
-      "type": "appearance",
-      "box": [
-        900,
-        90,
-        200,
-        140
-      ],
-      "note": "Inspection sheet check 1: the part must have the tab at top right. IS sheet: ชิ้นงานต้องมีปีกอยู่ด้านขวาบน. Box runs down to y=230 to cover where the wing ends: on a good part it stops near (1045,185), and a wing that runs on past that was missed by the old 880,72,180,120 box."
+      "note": "top-left corner must be chamfered: the cut-away corner stays empty"
     },
     {
       "id": "tab_top_right_geom",
       "type": "geometry",
       "box": [
-        900,
-        90,
-        200,
-        140
+        950,
+        117,
+        32,
+        32
       ],
       "tolerance": {
-        "area_pct": 10.0,
-        "fill_ratio_pct": 12.0,
-        "corner_angle_deg": 15.0
+        "min_area_frac": 0.59
       },
-      "note": "Silhouette check for the same tab: a bent-up or missing tab changes the filled area of this box."
+      "note": "tab at top right must be there"
+    },
+    {
+      "id": "tab_top_right_flat",
+      "type": "appearance",
+      "box": [
+        915,
+        146,
+        250,
+        84
+      ],
+      "threshold": 11.1,
+      "note": "tab at top right must be flat and undamaged (bent flap fails)"
     }
   ],
-  "input_size": 896,
-  "threshold_grid": [
-    51,
-    64
-  ],
-  "threshold_worst_ok": 15.532109260559082,
-  "threshold_best_ng": 27.406524658203125
+  "input_size": 896
 }

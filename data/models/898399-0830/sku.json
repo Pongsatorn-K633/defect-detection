@@ -1,0 +1,97 @@
+{
+  "sku": "898399-0830",
+  "canvas_size": [
+    1250,
+    456
+  ],
+  "ref_area_px": 1551464.0,
+  "threshold": 6.0,
+  "rois": [
+    {
+      "id": "hole_1_round_geom",
+      "type": "geometry",
+      "box": [
+        230,
+        158,
+        80,
+        142
+      ],
+      "tolerance": {
+        "min_hole_px": 895,
+        "hole_px": 1643,
+        "hole_elong": 1.05,
+        "max_elong": 1.18
+      },
+      "note": "round hole 1 must be punched"
+    },
+    {
+      "id": "hole_2_oval_geom",
+      "type": "geometry",
+      "box": [
+        354,
+        173,
+        74,
+        117
+      ],
+      "tolerance": {
+        "min_hole_px": 312,
+        "hole_px": 623,
+        "hole_elong": 1.27,
+        "min_elong": 1.16
+      },
+      "note": "oval hole must be punched"
+    },
+    {
+      "id": "hole_3_round_geom",
+      "type": "geometry",
+      "box": [
+        570,
+        140,
+        104,
+        171
+      ],
+      "tolerance": {
+        "min_hole_px": 798,
+        "hole_px": 1592,
+        "hole_elong": 1.03,
+        "max_elong": 1.18
+      },
+      "note": "round hole 3 must be punched"
+    },
+    {
+      "id": "hole_4_round_geom",
+      "type": "geometry",
+      "box": [
+        824,
+        156,
+        59,
+        155
+      ],
+      "tolerance": {
+        "min_hole_px": 448,
+        "hole_px": 876,
+        "hole_elong": 1.05,
+        "max_elong": 1.18
+      },
+      "note": "round hole 4 must be punched"
+    },
+    {
+      "id": "hole_5_round_geom",
+      "type": "geometry",
+      "box": [
+        949,
+        152,
+        68,
+        165
+      ],
+      "tolerance": {
+        "min_hole_px": 885,
+        "hole_px": 1619,
+        "hole_elong": 1.06,
+        "max_elong": 1.18
+      },
+      "note": "round hole 5 must be punched"
+    }
+  ],
+  "input_size": 672
+}

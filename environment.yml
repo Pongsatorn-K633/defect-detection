@@ -16,7 +16,7 @@ channels:
 dependencies:
   - python=3.12
   - pip
-  - numpy=1.26.*
+  - numpy>=2
   - scipy
   - scikit-learn
   - pandas

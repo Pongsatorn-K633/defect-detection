@@ -1,39 +1,38 @@
 {
   "sku": "898213-8740",
   "canvas_size": [
-    1220,
+    1174,
     1250
   ],
   "ref_area_px": 553869.0,
   "threshold": 215.9,
   "rois": [
     {
-      "id": "check_1",
+      "id": "no_tab",
       "type": "appearance",
       "box": [
-        158,
-        106,
-        380,
-        1050
-      ]
+        317,
+        540,
+        274,
+        163
+      ],
+      "threshold": 82.8,
+      "note": "there must be NO tab over the window"
     },
     {
-      "id": "check_1_geom",
+      "id": "no_tab_window_geom",
       "type": "geometry",
       "box": [
-        158,
-        106,
-        380,
-        1050
+        562,
+        580,
+        42,
+        135
       ],
       "tolerance": {
-        "area_pct": 10.0,
-        "fill_ratio_pct": 12.0,
-        "corner_angle_deg": 15.0
-      }
+        "max_area_frac": 0.81
+      },
+      "note": "window edge must stay open: a tab there fills it"
     }
   ],
-  "input_size": 672,
-  "threshold_worst_ok": 91.53368377685547,
-  "threshold_best_ng": 509.3396911621094
+  "input_size": 672
 }

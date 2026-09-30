@@ -308,7 +308,7 @@ def tune(
             f"{best.golden_max:.2f}, but the subspace is *fitted on* them — "
             f"they score near zero by construction and everyday good parts "
             f"score several times higher.\n\n"
-            f"**Upload known-good parts above and re-measure** to turn this "
+            f"**Upload known-good parts in step 1 and re-measure** to turn this "
             f"into a measured window.\n\n"
             f"The smallest check holds {best.min_patches} valid patches "
             f"(target {TARGET_PATCHES}).")

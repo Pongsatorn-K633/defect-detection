@@ -22,7 +22,8 @@ import cv2
 import gradio as gr
 import numpy as np
 
-from inspector import autosize, cancel
+from inspector import autosize, boxsearch, cancel
+from inspector import geometry as geom_mod
 from inspector import metrics as met
 from inspector import metricsviz as mviz
 from inspector import subspace as sub_mod
@@ -510,7 +511,8 @@ def saved_checks_status(sku) -> str:
     msg = (f"**Saved `sku.json`** — {_saved_when(path)}: "
            f"{len(group_checks(cfg.rois))} check(s), threshold {thr}, "
            f"input resolution {size}.")
-    geo = [r for r in cfg.rois if r.type == "geometry"]
+    geo = [r for r in cfg.rois if r.type == "geometry"
+           and not geom_mod.is_presence(r.tolerance)]
     if geo:
         try:
             nominals = load_registration(sku)["geometry_nominals"]
@@ -670,17 +672,140 @@ def _check_boxes(rois) -> list[dict]:
     return out
 
 
+# The one choice a person makes per box: is this sheet item about how the
+# metal looks (appearance), whether the metal is there (geometry), or both.
+# How geometry is measured is decided from the golden photos, not asked --
+# see `_geometry_roi`. An earlier four-way list exposed those internals and
+# was the most confusing control in the app.
+KIND_APPEARANCE = "appearance"
+KIND_GEOMETRY = "geometry"
+KIND_BOTH = "both"
+CHECK_KINDS = [KIND_APPEARANCE, KIND_GEOMETRY, KIND_BOTH]
+
+# A geometry box at least this much metal on the golden parts must stay metal;
+# at most (1 - this) it must stay empty; in between the outline crosses it and
+# must keep its shape. The same 15-85% band `outline_through` uses.
+SOLID_FILL = 0.85
+
+
+def _check_kind(app, geo) -> str:
+    """The check type as shown in the table's type column."""
+    if app and geo:
+        return KIND_BOTH
+    return KIND_APPEARANCE if app else KIND_GEOMETRY
+
+
+def _parse_kind(text):
+    """A check type -> appearance / geometry / both; None if not understood.
+
+    Also takes the wording earlier versions showed (surface, shape, must be
+    metal), so an old table still reads.
+    """
+    t = str(text or "").strip().lower()
+    if t == KIND_BOTH or ("appearance" in t and "geometry" in t) \
+            or ("surface" in t and "shape" in t) or t == "yes":
+        return KIND_BOTH
+    if "geometry" in t or "shape" in t or "metal" in t or "empty" in t:
+        return KIND_GEOMETRY
+    if "appearance" in t or "surface" in t or t == "no":
+        return KIND_APPEARANCE
+    return None
+
+
 def _roi_rows(rois):
-    """One table row per check; `shape check` says whether the outline is
-    measured too, which is decided for the operator rather than asked."""
+    """One table row per check, with its type."""
     rows = []
     for name, app, geo in group_checks(rois):
         note = (app.note if app and app.note else geo.note if geo else "")
-        rows.append([name, *check_box(app, geo), "yes" if geo else "no", note])
+        rows.append([name, *check_box(app, geo), _check_kind(app, geo), note])
     return rows
 
 
-def _build_check(name, box, note, reg, sku, prev_app=None, prev_geo=None):
+def _ref_hole_px(box, reg=None, sku=None) -> float:
+    """Area of an enclosed dark hole inside the box on the reference, or 0."""
+    ref = reg["ref_image"] if reg else saved_reference(sku)
+    if ref is None:
+        return 0.0
+    gray = cv2.cvtColor(ref, cv2.COLOR_BGR2GRAY)
+    return geom_mod.measure_hole(gray, box)
+
+
+# A dark enclosed region at least this big on the reference is a hole, not a
+# speck of dirt or a scratch.
+HOLE_MIN_PX = 150
+
+
+def _hole_roi(name, box, note, hole_px, prev_geo=None) -> ROI:
+    """A "the hole must be there" check: fails when under half the hole shows.
+
+    Half, because every good photo of 898399-0830 showed its holes within 5%
+    of the same size while a missing one measured 0-4 px: half the hole sits
+    far from both. A limit Find best box measured is kept.
+    """
+    tol = dict(prev_geo.tolerance) if prev_geo and \
+        geom_mod.is_hole(prev_geo.tolerance) else \
+        {"min_hole_px": round(0.5 * hole_px), "hole_px": round(hole_px)}
+    return ROI(f"{name}{GEOM_SUFFIX}", "geometry", tuple(int(v) for v in box),
+               tolerance=tol, note=note)
+
+
+def _geometry_roi(name, box, note, reg, sku, prev_geo=None) -> ROI:
+    """The geometry half of a check, measured the way this spot needs.
+
+    Decided from how much of the box is metal on the golden parts, so nobody
+    has to know the options:
+
+      * mostly metal -> must stay metal (a missing tab opens it up)
+      * mostly empty -> must stay empty (an extra tab fills it)
+      * outline crosses it -> the outline must match the golden parts
+
+    The outline comparison alone cannot do the first two: it allows a
+    percentage either side of the golden measurement, and on 898213-8750 a
+    tab that sits a little differently already moved the metal in a solid
+    box by 27%. A limit someone measured (or Find best box set) is kept when
+    the spot still calls for the same kind of check.
+    """
+    box = tuple(int(v) for v in box)
+    # A punched hole first: the silhouette cannot be trusted with holes (it
+    # filled 898399-0830's small ones in every photo), the photo can.
+    hole_px = _ref_hole_px(box, reg, sku)
+    if hole_px >= HOLE_MIN_PX:
+        return _hole_roi(name, box, note, hole_px, prev_geo)
+    fill = box_fill(box, reg, sku)
+    prev_tol = dict(prev_geo.tolerance or {}) if prev_geo else {}
+    if np.isfinite(fill) and fill >= SOLID_FILL:
+        key = "min_area_frac"
+    elif np.isfinite(fill) and fill <= 1.0 - SOLID_FILL:
+        key = "max_area_frac"
+    else:
+        tol = prev_tol if prev_tol and not geom_mod.is_presence(prev_tol) \
+            else dict(DEFAULT_TOLERANCE)
+        return ROI(f"{name}{GEOM_SUFFIX}", "geometry", box, tolerance=tol,
+                   note=note)
+    limit = prev_tol.get(key, 0.5)
+    return ROI(f"{name}{GEOM_SUFFIX}", "geometry", box,
+               tolerance={key: round(float(limit), 2)}, note=note)
+
+
+def _build_check(name, box, note, reg, sku, prev_app=None, prev_geo=None,
+                 kind=None):
+    """The ROIs for one box. `kind` is appearance / geometry / both, or None
+    to decide it from the box as drawing always has."""
+    box = tuple(int(v) for v in box)
+    if kind is None:
+        return _auto_check(name, box, note, reg, sku, prev_app, prev_geo)
+    rois = []
+    if kind in (KIND_APPEARANCE, KIND_BOTH):
+        rois.append(ROI(name, "appearance", box,
+                        threshold=prev_app.threshold if prev_app else None,
+                        note=note))
+    if kind in (KIND_GEOMETRY, KIND_BOTH):
+        rois.append(_geometry_roi(name, box, note if kind == KIND_GEOMETRY
+                                  else "", reg, sku, prev_geo))
+    return rois
+
+
+def _auto_check(name, box, note, reg, sku, prev_app=None, prev_geo=None):
     """The ROIs for one drawn box: surface always, outline where it helps.
 
     The outline check is only added where the part's outline clearly runs
@@ -696,8 +821,14 @@ def _build_check(name, box, note, reg, sku, prev_app=None, prev_geo=None):
     rois = [ROI(name, "appearance", box,
                 threshold=prev_app.threshold if prev_app else None,
                 note=note)]
+    hole_px = _ref_hole_px(box, reg, sku)
+    if hole_px >= HOLE_MIN_PX:
+        # A box drawn round a punched hole: "the hole must be there".
+        rois.append(_hole_roi(name, box, "", hole_px, prev_geo))
+        return rois
     if outline_through(box, reg, sku):
         tol = dict(prev_geo.tolerance) if prev_geo and prev_geo.tolerance \
+            and not geom_mod.is_presence(prev_geo.tolerance) \
             else dict(DEFAULT_TOLERANCE)
         rois.append(ROI(f"{name}{GEOM_SUFFIX}", "geometry", box,
                         tolerance=tol,
@@ -757,9 +888,9 @@ def do_roi_click(state, evt: gr.SelectData):
     added = _build_check(name, (bx, by, bw, bh), "", reg, state.get("sku"))
     rois.extend(added)
     state["draft_rois"] = rois
-    shape = ("the part's outline crosses it, so its **shape** is checked too"
-             if len(added) == 2 else
-             "it sits on flat surface, so only the **surface** is checked")
+    shape = ("the part's outline crosses it, so it is checked as "
+             "**appearance + geometry**" if len(added) == 2 else
+             "it sits on flat surface, so it is checked as **appearance**")
     msg = (f"Added **{name}** at ({bx}, {by}, {bw}, {bh}) — {shape}. Give it "
            f"a name in the table below.")
     fill = box_fill((bx, by, bw, bh), reg, state.get("sku"))
@@ -802,7 +933,7 @@ def do_roi_table_edit(rows, state):
     # by position -- otherwise an inserted row would inherit its limits.
     named_now = {str((list(r) + [""])[0] or "").strip() for r in records}
 
-    rois, problems, seen, moved = [], [], set(), []
+    rois, problems, seen, moved, type_problems = [], [], set(), [], []
     for i, row in enumerate(records, 1):
         cells = list(row) + [""] * (7 - len(row))
         name = str(cells[0] or "").strip()
@@ -831,7 +962,26 @@ def do_roi_table_edit(rows, state):
             prev_app = prev_geo = None
         prev = prev_app or prev_geo
 
-        if prev is not None and tuple(check_box(prev_app, prev_geo)) == box:
+        # The type column: only a changed entry is acted on, so editing a
+        # name or a coordinate never re-decides a type someone chose.
+        typed = str(cells[5] or "").strip()
+        shown = _check_kind(prev_app, prev_geo) if prev is not None else ""
+        kind = None
+        if typed and typed != shown:
+            kind = _parse_kind(typed)
+            if kind is None:
+                type_problems.append(
+                    f"row {i} ({name}): type '{typed}' not understood, kept "
+                    f"as {shown or 'drawn'} — change it with **Set type** "
+                    f"below the table")
+        if kind is None and prev is not None \
+                and tuple(check_box(prev_app, prev_geo)) != box:
+            # A moved box keeps the type it had; geometry re-decides only how
+            # it is measured at the new spot.
+            kind = shown
+
+        if kind is None and prev is not None \
+                and tuple(check_box(prev_app, prev_geo)) == box:
             # Unmoved: keep both halves exactly, only renamed and re-noted.
             if prev_app:
                 rois.append(ROI(name, "appearance", tuple(prev_app.box),
@@ -842,9 +992,12 @@ def do_roi_table_edit(rows, state):
                                 prev_geo.tolerance,
                                 prev_geo.note if prev_app else note))
             continue
-        built = _build_check(name, box, note, reg, sku, prev_app, prev_geo)
+        built = _build_check(name, box, note, reg, sku, prev_app, prev_geo,
+                             kind=kind)
         rois.extend(built)
-        if prev is not None and len(built) == 2:
+        if prev is not None and any(
+                r.type == "geometry" and not geom_mod.is_presence(r.tolerance)
+                for r in built):
             moved.append(name)
 
     state["draft_rois"] = rois
@@ -852,6 +1005,8 @@ def do_roi_table_edit(rows, state):
     msg = f"{len(seen)} check(s) defined."
     if problems:
         msg += " Skipped — " + "; ".join(problems[:4])
+    if type_problems:
+        msg += " ⚠️ " + "; ".join(type_problems[:4]) + "."
     if moved:
         # The shape check compares against measurements taken on the old box.
         # Saving re-measures it from this session's fit.
@@ -1293,8 +1448,12 @@ def do_tune(files, sku, state, progress=gr.Progress()):
     else:
         state.pop("tuned", None)
 
+    # No threshold is a finding, not a failure: good and bad overlapped, and
+    # `res.reason` says which parts to compare.
+    thr_md = ("none — good and bad overlap" if res.threshold is None
+              else f"{res.threshold:g}")
     md = (f"### input resolution **{res.input_size}** · score threshold "
-          f"**{res.threshold:g}**\n\n"
+          f"**{thr_md}**\n\n"
           f"*Measured in {_fmt_duration(elapsed)} across "
           f"{len(res.sweep)} resolution(s).*\n\n"
           f"{tuning.table(res)}\n\n{res.reason}")
@@ -1535,6 +1694,231 @@ def do_roi_save(sku, threshold, state):
                     "check can measure the good parts inside the new box. "
                     "Until then inspection reports it as not measured.")
     return state, msg
+
+
+def do_roi_set_type(check, kind, sku, state):
+    """Change one check's type from the dropdowns under the table."""
+    reg = state.get("reg")
+    rois = list(_draft_or_saved_rois(sku, state))
+    groups = group_checks(rois)
+    if check not in {n for n, _, _ in groups} or kind not in CHECK_KINDS:
+        return (state, _roi_canvas(reg, rois, sku=sku), _roi_rows(rois),
+                "Pick a check and a type first.")
+    out = []
+    for name, app, geo in groups:
+        if name != check:
+            out += [r for r in (app, geo) if r is not None]
+            continue
+        note = (app.note if app and app.note else geo.note if geo else "")
+        out += _build_check(name, check_box(app, geo), note, reg, sku,
+                            app, geo, kind=kind)
+    state = dict(state)
+    state["draft_rois"] = out
+    state["roi_pending"] = None
+    how = ""
+    geo = next((g for n, _, g in group_checks(out) if n == check), None)
+    if geo is not None:
+        tol = geo.tolerance or {}
+        how = (" Geometry here: there is a hole in the box, so it **fails if "
+               "the hole is missing or too small**. Leave room around the "
+               "hole — the camera can move it by 40 px."
+               if geom_mod.is_hole(tol) else
+               " Geometry here: the spot is metal on good parts, so it "
+               "**fails if the metal is missing**."
+               if "min_area_frac" in tol else
+               " Geometry here: the spot is empty on good parts, so it "
+               "**fails if metal appears**."
+               if "max_area_frac" in tol else
+               " Geometry here: the outline crosses the box, so it **fails "
+               "if the outline changes**.")
+    return (state, _roi_canvas(reg, out, sku=sku), _roi_rows(out),
+            f"**{check}** is now **{kind}**.{how} *Not saved yet — press "
+            f"**Check my boxes**, then **Save sku.json**.*")
+
+
+def _check_type_of(check, sku, state):
+    """The type dropdown follows the check picked beside it."""
+    for name, app, geo in group_checks(_draft_or_saved_rois(sku, state)):
+        if name == check:
+            return _check_kind(app, geo)
+    return gr.update()
+
+
+# ------------------------------------------------------ panel 2: prove boxes
+
+def _draft_or_saved_rois(sku, state) -> list[ROI]:
+    rois = state.get("draft_rois") or []
+    if not rois and sku and sku_config_exists(sku):
+        rois = SKUConfig.load(sku).rois
+    return rois
+
+
+def _box_photos(sku, state, progress):
+    """The part's labelled photos, scored once against its saved model.
+
+    Cached on the model file and the photo files, so pressing Check or Find
+    again after moving a box is instant, and a re-fit or a new photo is picked
+    up without anyone having to know there was a cache.
+    """
+    reg = load_registration(sku)
+    reg["sku"] = sku
+    paths = boxsearch.labelled_paths(sku)
+    model = MODEL_DIR / sku / "model.npz"
+    key = (sku, model.stat().st_mtime,
+           tuple((str(p), p.stat().st_mtime) for p, _, _ in paths))
+    cache = state.get("box_photos")
+    if cache and cache["key"] == key:
+        return cache["reg"], cache["photos"], state
+    photos = boxsearch.score_photos(sku, reg, paths, progress)
+    state = dict(state)
+    state["box_photos"] = {"key": key, "reg": reg, "photos": photos}
+    return reg, photos, state
+
+
+def _box_prereq(sku, state):
+    """Why the checker cannot run yet, or None."""
+    if not sku:
+        return "Select a part first."
+    if not (MODEL_DIR / sku / "model.npz").exists():
+        return "**Fit the subspace first** (step 1) — photos are judged on it."
+    if not _draft_or_saved_rois(sku, state):
+        return "**Draw at least one box first.**"
+    paths = boxsearch.labelled_paths(sku)
+    if not any(label == boxsearch.BAD for _, _, label in paths):
+        return (f"**No bad photos for {sku} yet.** Add photos of known-bad "
+                f"parts in step 1, below the fit report — without them "
+                f"nothing can show that a box catches anything.")
+    return None
+
+
+def do_box_check(sku, threshold, state, progress=gr.Progress()):
+    """Judge every golden, good and bad photo with the boxes as drawn."""
+    import pandas as pd
+
+    why = _box_prereq(sku, state)
+    if why:
+        return state, why, None
+    rois = _draft_or_saved_rois(sku, state)
+    reg, photos, state = _box_photos(sku, state, progress)
+    rep = boxsearch.check_boxes(photos, rois, reg, float(threshold))
+    n = len(rep["rows"])
+    right = n - len(rep["wrong"])
+    lines = [f"### {right} of {n} photos judged right"
+             + (" ✅" if not rep["wrong"] else " — fix the boxes before testing")]
+    for name, goods in rep["false_fails"].items():
+        if not goods:
+            continue
+        halves = rep["half_fails"][name]
+        if rep["both_halves"][name] and halves["geometry"] == 0:
+            fix = ("Only its **appearance** half fails them — set its type "
+                   "to **geometry** (Set type, under the table).")
+        elif rep["both_halves"][name] and halves["appearance"] == 0:
+            fix = ("Only its **geometry** half fails them — set its type to "
+                   "**appearance** (Set type, under the table).")
+        else:
+            fix = "Press **Find best box** for it."
+        lines.append(f"- ❌ **{name}** fails good part(s): "
+                     f"{', '.join(goods)} — false alarm. {fix}")
+    if rep["uncaught"]:
+        lines.append(f"- ❌ **No check catches:** {', '.join(rep['uncaught'])}"
+                     f" — a missed defect. Draw a box around that defect, or "
+                     f"press **Find best box** on the check meant to catch it.")
+    if rep["retakes"]:
+        lines.append(f"- ⚠️ Not judged, photo unusable: "
+                     f"{'; '.join(rep['retakes'])}")
+    lines.append("\n*Judged exactly as inspection judges a part, with the "
+                 "boxes in the table above (saved or not). Golden photos score "
+                 "low because the model was fitted on them; the photos in "
+                 "`ok_images` are the honest test of good parts. Test photos "
+                 "are never used here.*")
+    table = pd.DataFrame(rep["rows"], columns=rep["headers"])
+    return state, "\n".join(lines), table
+
+
+def do_box_search(sku, pick, state, progress=gr.Progress()):
+    """Propose the best box near a check, of each kind, with its proof."""
+    why = _box_prereq(sku, state)
+    if why:
+        return state, why, gr.update(choices=[], value=None)
+    rois = _draft_or_saved_rois(sku, state)
+    checks = {name: (app, geo) for name, app, geo in group_checks(rois)}
+    if pick not in checks:
+        return (state, "Pick the check to improve first.",
+                gr.update(choices=[], value=None))
+    box = check_box(*checks[pick])
+    reg, photos, state = _box_photos(sku, state, progress)
+    found, reason = boxsearch.search(photos, box, reg)
+    state = dict(state)
+    state["box_suggestions"] = {"check": pick, "items": found}
+    if not found:
+        return state, f"**Nothing found for {pick}.** {reason}", \
+            gr.update(choices=[], value=None)
+    md = (f"### {len(found)} suggestion(s) for **{pick}**\n\n"
+          f"Every suggestion passes all good photos; each says how many bad "
+          f"photos it catches. An **appearance** suggestion replaces "
+          f"{pick}'s box. A **geometry** suggestion is added as a new check "
+          f"beside it.\n\n"
+          f"**Pick one that is right on all photos it had not seen** — that "
+          f"is the app hiding each photo in turn and checking the box still "
+          f"works on it. Then press **Use this suggestion** and **Check my "
+          f"boxes** again.")
+    choices = [(s.label, i) for i, s in enumerate(found)]
+    return state, md, gr.update(choices=choices, value=0)
+
+
+def do_box_apply(choice, sku, state):
+    """Put the chosen suggestion into the table (not saved yet)."""
+    sug = state.get("box_suggestions") or {}
+    items = sug.get("items") or []
+    reg = state.get("reg")
+    rois = list(_draft_or_saved_rois(sku, state))
+    if choice is None or not items or int(choice) >= len(items):
+        return (state, _roi_canvas(reg, rois, sku=sku), _roi_rows(rois),
+                "Press **Find best box** and pick a suggestion first.")
+    s = items[int(choice)]
+    name = sug["check"]
+    groups = group_checks(rois)
+    if s.kind == "hole present":
+        # A better box for this check's own hole: it replaces the hole box
+        # rather than adding a second check on the same hole, which is what
+        # left duplicate rows behind.
+        rebuilt = []
+        for n, app, geo in groups:
+            if n != name:
+                rebuilt += [r for r in (app, geo) if r is not None]
+                continue
+            note = (app.note if app and app.note else geo.note if geo else "")
+            rebuilt += ([ROI(name, "appearance", tuple(int(v) for v in s.box),
+                             threshold=app.threshold, note=app.note)]
+                        if app else []) + s.rois(name, note if not app else "")
+        state = dict(state)
+        state["draft_rois"] = rebuilt
+        return (state, _roi_canvas(reg, rebuilt, sku=sku), _roi_rows(rebuilt),
+                f"**{name}** now uses the suggested hole box. *Not saved yet — "
+                f"press **Check my boxes**, then **Save sku.json**.*")
+    if s.kind == "surface":
+        note = next((a.note for n, a, _ in groups if n == name and a), "")
+        rebuilt = []
+        for n, app, geo in groups:
+            rebuilt += s.rois(name, note) if n == name else \
+                [r for r in (app, geo) if r is not None]
+        rois = rebuilt
+        what = f"**{name}** now uses the suggested appearance box"
+    else:
+        suffix = {"must be metal": "present", "must be empty": "absent",
+                  "hole present": "hole"}[s.kind]
+        existing = {n for n, _, _ in groups}
+        new, k = f"{name}_{suffix}", 2
+        while new in existing:
+            new, k = f"{name}_{suffix}{k}", k + 1
+        rois = rois + s.rois(new, note=f"geometry ({s.kind}): added by Find "
+                                       f"best box for {name}")
+        what = f"added **{new}** (geometry, {s.kind})"
+    state = dict(state)
+    state["draft_rois"] = rois
+    return (state, _roi_canvas(reg, rois, sku=sku), _roi_rows(rois),
+            f"{what}. *Not saved yet — press **Check my boxes**, then **Save "
+            f"sku.json**.*")
 
 
 # -------------------------------------------------------------------- panel 3
@@ -2150,8 +2534,8 @@ def do_sku_create(new_sku, state):
     msg = (f"Created **{name}** with empty photo folders, ready to fill:\n\n"
            f"- `normal_images/{name}/` — golden photos of good parts "
            f"(step 1)\n"
-           f"- `ok_images/{name}/` — known-good parts, for tuning (step 3)\n"
-           f"- `ng_images/{name}/` — known-bad parts, for tuning (step 3)\n"
+           f"- `ok_images/{name}/` — known-good parts (upload in step 1)\n"
+           f"- `ng_images/{name}/` — known-bad parts (upload in step 1)\n"
            f"- `test_images/{name}/` — parts to inspect\n\n"
            f"Copy photos straight into these folders, or upload them in each "
            f"step. Then **Fit subspace** in step 1.")
@@ -2295,11 +2679,12 @@ def build_ui():
                     "the canonical canvas, and that canvas does not exist "
                     "until something has been fitted."
                 )
-                with gr.Tab("1. Golden images → fit"):
+                with gr.Tab("1. Photos → fit"):
                     gr.Markdown(
-                        "Selecting a part above loads whatever golden images "
-                        "it already has. Upload more (or different ones) and "
-                        "re-fit at any time."
+                        "Selecting a part above loads whatever photos it "
+                        "already has. Upload golden photos and **fit**, then "
+                        "upload bad and good parts below the fit report. "
+                        "Upload more and re-fit at any time."
                     )
                     # Preloaded with the first part's images. `sku_pick.change`
                     # only fires on a real change, so without this the box sits
@@ -2335,6 +2720,55 @@ def build_ui():
                                                scale=1)
                     fit_status = gr.Textbox(label="status", lines=6)
                     fit_stats = gr.Textbox(label="fit statistics", lines=10)
+
+                    # Bad and good photos belong here, before any box is
+                    # drawn: step 2 proves every box on them (Check my boxes,
+                    # Find best box), and a box nobody has tested against a
+                    # bad part is a guess. They used to be uploaded only in
+                    # step 3, after the boxes were already drawn.
+                    gr.Markdown(
+                        "### Bad and good parts — upload them now\n\n"
+                        "Step 2 uses these to **prove each box** before you "
+                        "trust it: every bad part must fail and every good "
+                        "part must pass. Without bad photos nothing can show "
+                        "that a box catches its defect.\n\n"
+                        "- **Bad parts (NG)** — at least one for each item "
+                        "on the inspection sheet.\n"
+                        "- **Good parts (OK)** — ordinary passing parts, not "
+                        "the golden ones above. The model is fitted on the "
+                        "golden photos, so those always score low; these "
+                        "show where everyday good parts really land.\n\n"
+                        "*Keep the blind-test photos out of both — they go "
+                        "in the Inspection tab only.*"
+                    )
+                    # Hidden list + self-emptying drop area, as for golden.
+                    ng_files = gr.File(file_count="multiple", visible=False)
+                    ng_drop = gr.File(
+                        file_count="multiple", file_types=UPLOAD_TYPES,
+                        label="known-bad parts (NG) — parts that fail a check "
+                              "on the inspection sheet. Each drop adds to the "
+                              "list.",
+                        height=120)
+                    ng_gallery = gr.Gallery(label="NG set for this part",
+                                            columns=6, height=150)
+                    with gr.Row():
+                        ng_save_btn = gr.Button("save these to the part")
+                        ng_clear = gr.Button("clear list", size="sm")
+                        ng_status = gr.Markdown()
+
+                    ok_files = gr.File(file_count="multiple", visible=False)
+                    ok_drop = gr.File(
+                        file_count="multiple", file_types=UPLOAD_TYPES,
+                        label="known-good parts (OK) — parts that pass every "
+                              "check on the inspection sheet. Each drop adds "
+                              "to the list.",
+                        height=120)
+                    ok_gallery = gr.Gallery(label="OK set for this part",
+                                            columns=6, height=150)
+                    with gr.Row():
+                        ok_save_btn = gr.Button("save these to the part")
+                        ok_clear = gr.Button("clear list", size="sm")
+                        ok_status = gr.Markdown()
 
 
                 with gr.Tab("2. Inspection-sheet checks (ROIs)"):
@@ -2393,11 +2827,11 @@ def build_ui():
                     # The single editor for everything about a check. Typing
                     # a coordinate redraws the box immediately, so the numbers
                     # and the picture never disagree.
-                    # One row per check. `shape check` is decided by the app
-                    # (is there an outline in the box?) and shown, not asked:
-                    # nobody drawing a box should need to know the two kinds.
+                    # One row per check. The type column only shows; it is
+                    # changed with the dropdowns below, because a table cell
+                    # cannot be a dropdown and typed types were error-prone.
                     roi_table = gr.Dataframe(
-                        headers=["check", "x", "y", "w", "h", "shape check",
+                        headers=["check", "x", "y", "w", "h", "type",
                                  "description (human read only, "
                                  "not used by the model)"],
                         datatype=["str", "number", "number", "number",
@@ -2410,14 +2844,81 @@ def build_ui():
                     )
                     gr.Markdown(
                         "Draw one box around each item on the inspection "
-                        "sheet, then give it a **name** here. Editing "
-                        "**x / y / w / h** moves the box straight away. "
-                        "**shape check** is set automatically: *yes* when the "
-                        "part's outline crosses the box, so a missing or bent "
-                        "feature is caught too. Delete a row with the table's "
-                        "own row controls."
+                        "sheet and give it a **name**. The **type** is set "
+                        "for you when you draw; change it below only if the "
+                        "sheet item needs it:\n\n"
+                        "- **appearance** — how the metal looks: hole "
+                        "missing or not punched, scratch, stain\n"
+                        "- **geometry** — whether the metal is there: tab "
+                        "missing, extra tab, bent or cut edge\n"
+                        "- **both** — either kind of defect\n\n"
+                        "Delete a row with the table's own row controls."
                     )
+                    with gr.Row():
+                        type_check = gr.Dropdown(label="check", choices=[],
+                                                 allow_custom_value=True,
+                                                 scale=2)
+                        type_kind = gr.Dropdown(CHECK_KINDS, label="type",
+                                                value=KIND_APPEARANCE,
+                                                scale=2)
+                        type_btn = gr.Button("Set type", scale=1)
+                    # sku.json can change outside this session -- written by
+                    # /setup-sku or by hand -- and the table otherwise keeps
+                    # the session's copy, which Save would then write back.
+                    roi_reload_btn = gr.Button(
+                        "↻ Reload checks from sku.json", size="sm")
 
+                    # A box that looks right can still fail good parts or miss
+                    # a defect, and nobody can tell by eye. These judge every
+                    # labelled photo with the boxes as drawn, before a test
+                    # finds out instead.
+                    with gr.Accordion("Test the boxes on your good and bad "
+                                      "photos", open=True):
+                        gr.Markdown(
+                            "**1. Check my boxes** — every good photo must "
+                            "PASS and every bad photo must FAIL. It shows ✅ "
+                            "or ❌ for each photo, and why.\n\n"
+                            "**2. If there is a ❌:** pick the check named in "
+                            "the ❌ message, press **Find best box**, choose "
+                            "a suggestion that is *right on all photos it had "
+                            "not seen*, and press **Use this suggestion**.\n\n"
+                            "**3. Repeat 1** until every photo is ✅, then "
+                            "press **Save sku.json** at the bottom.\n\n"
+                            "*Uses the fit and the bad/good photos from step "
+                            "1 — about 2 s per photo the first time, instant "
+                            "after. Test photos are never used, so a blind "
+                            "test stays blind.*")
+                        box_check_btn = gr.Button("Check my boxes",
+                                                  variant="primary")
+                        box_check_status = gr.Markdown()
+                        box_check_table = gr.Dataframe(
+                            label="every labelled photo, judged as inspection "
+                                  "would (score / limit per check)",
+                            interactive=False, wrap=True)
+                        with gr.Row():
+                            box_search_pick = gr.Dropdown(
+                                label="check to improve", choices=[],
+                                allow_custom_value=True, scale=2)
+                            box_search_btn = gr.Button("Find best box",
+                                                       scale=1)
+                        box_search_status = gr.Markdown()
+                        box_search_choice = gr.Radio(label="suggestions",
+                                                     choices=[])
+                        box_apply_btn = gr.Button("Use this suggestion")
+                        box_apply_status = gr.Markdown()
+
+                    with gr.Accordion("advanced: edit as text", open=False):
+                        roi_text = gr.Textbox(
+                            label="one per line: id, type, x, y, w, h",
+                            lines=5,
+                            placeholder="tab_top_right, appearance, "
+                                        "930, 80, 280, 230",
+                        )
+                        preview_btn = gr.Button("Preview typed ROIs")
+
+                    # Last in the step, after the boxes have been tested:
+                    # saving is the final action, not something to press
+                    # between drawing and checking.
                     with gr.Row():
                         # Follows the part picked at the top of Registration,
                         # so ROIs cannot be saved onto a different SKU than
@@ -2430,19 +2931,10 @@ def build_ui():
                                                  variant="primary", scale=1)
                     roi_save_status = gr.Markdown()
 
-                    with gr.Accordion("advanced: edit as text", open=False):
-                        roi_text = gr.Textbox(
-                            label="one per line: id, type, x, y, w, h",
-                            lines=5,
-                            placeholder="tab_top_right, appearance, "
-                                        "930, 80, 280, 230",
-                        )
-                        preview_btn = gr.Button("Preview typed ROIs")
-
                 # Third and last, because it needs what steps 1 and 2 produce:
                 # golden images to fit on, and an ROI to measure inside. It
                 # was previously above step 1, where it could only ever fail.
-                with gr.Tab("3. Tuning with NG / OK"):
+                with gr.Tab("3. Tuning — resolution and threshold"):
                     gr.Markdown(
                         "Every part scores differently, so these two settings "
                         "have to be measured for **this** part. Neither can "
@@ -2454,52 +2946,13 @@ def build_ui():
                         "- **score threshold** — the pass/fail line. It has "
                         "to sit above every good part and below every bad "
                         "one, so you need at least one of each to place it.\n\n"
-                        "Upload photos of **known-bad parts** below — at "
-                        "least one per check on the inspection sheet — and "
-                        "both are measured instead of guessed. Add "
-                        "**known-good parts** as well and the threshold is "
-                        "placed inside a gap measured on both sides, rather "
-                        "than estimated from the bad parts alone. Needs steps "
-                        "1 and 2 first."
+                        "With **known-bad parts** — at least one per check on "
+                        "the inspection sheet — both are measured instead of "
+                        "guessed. With **known-good parts** as well, the "
+                        "threshold is placed inside a gap measured on both "
+                        "sides. Both are uploaded in **step 1**; this step "
+                        "needs steps 1 and 2 first."
                     )
-                    # Hidden list + self-emptying drop area, as for golden.
-                    ng_files = gr.File(file_count="multiple", visible=False)
-                    ng_drop = gr.File(
-                        file_count="multiple", file_types=UPLOAD_TYPES,
-                        label="known-bad parts (NG) — parts that fail a check "
-                              "on the inspection sheet. Each drop adds to the "
-                              "list.",
-                        height=120)
-                    ng_gallery = gr.Gallery(label="NG set for this part",
-                                            columns=6, height=150)
-                    with gr.Row():
-                        ng_save_btn = gr.Button("save these to the part")
-                        ng_clear = gr.Button("clear list", size="sm")
-                        ng_status = gr.Markdown()
-
-                    gr.Markdown(
-                        "Upload photos of **known-good parts** below — "
-                        "ordinary parts that pass, not the golden ones from "
-                        "step 1. The subspace is *fitted on* the golden set, "
-                        "so those score near zero and cannot show where "
-                        "everyday good parts land; without real good parts "
-                        "the threshold is only an upper bound. Optional, but "
-                        "it turns the suggestion into a measured window."
-                    )
-                    ok_files = gr.File(file_count="multiple", visible=False)
-                    ok_drop = gr.File(
-                        file_count="multiple", file_types=UPLOAD_TYPES,
-                        label="known-good parts (OK) — parts that pass every "
-                              "check on the inspection sheet. Each drop adds "
-                              "to the list.",
-                        height=120)
-                    ok_gallery = gr.Gallery(label="OK set for this part",
-                                            columns=6, height=150)
-                    with gr.Row():
-                        ok_save_btn = gr.Button("save these to the part")
-                        ok_clear = gr.Button("clear list", size="sm")
-                        ok_status = gr.Markdown()
-
                     tune_ready = gr.Markdown()
                     with gr.Row():
                         tune_btn = gr.Button("Measure input resolution and "
@@ -2929,6 +3382,34 @@ def build_ui():
         roi_save_btn.click(do_roi_save, [roi_save_sku, threshold, state],
                            [state, roi_save_status]).then(
                                sku_summary, sku_pick, sku_info)
+
+        def _check_names(rows, current):
+            """The checks in the table, for the Find best box picker."""
+            try:
+                records = rows.values.tolist()
+            except AttributeError:
+                records = list(rows or [])
+            names = [str(r[0]).strip() for r in records if r and str(r[0]).strip()]
+            return gr.update(choices=names,
+                             value=current if current in names
+                             else (names[0] if names else None))
+
+        roi_table.change(_check_names, [roi_table, box_search_pick],
+                         box_search_pick)
+        roi_table.change(_check_names, [roi_table, type_check], type_check)
+        type_check.change(_check_type_of, [type_check, roi_save_sku, state],
+                          type_kind)
+        type_btn.click(do_roi_set_type,
+                       [type_check, type_kind, roi_save_sku, state],
+                       [state, roi_preview, roi_table, roi_status])
+        box_check_btn.click(do_box_check, [roi_save_sku, threshold, state],
+                            [state, box_check_status, box_check_table])
+        box_search_btn.click(do_box_search,
+                             [roi_save_sku, box_search_pick, state],
+                             [state, box_search_status, box_search_choice])
+        box_apply_btn.click(do_box_apply,
+                            [box_search_choice, roi_save_sku, state],
+                            [state, roi_preview, roi_table, box_apply_status])
         # Writes nothing: applying means re-fitting and saving, both explicit.
         ng_files.change(lambda fs, s: _viewable(_saved_plus(_ng_list(s), fs)),
                         [ng_files, sku_pick], ng_gallery)
@@ -3025,23 +3506,34 @@ def build_ui():
             with the config -- which disables position normalisation at
             inference without telling anyone.
             """
+            # A part with nothing saved yet gets the default, not whatever the
+            # previously picked part left in the box: saving would otherwise
+            # hand it that other part's resolution.
+            default = PipelineConfig().features.input_size
+            if not sku:
+                return gr.update()
             try:
-                cfg = SKUConfig.load(sku) if sku else None
+                cfg = SKUConfig.load(sku)
             except FileNotFoundError:
-                return gr.update()
-            if cfg is None or cfg.input_size is None:
-                return gr.update()
-            return cfg.input_size
+                return default
+            return cfg.input_size or default
 
         app.load(_size_saved, sku_pick, input_size)
         sku_pick.change(_size_saved, sku_pick, input_size)
 
         def _thr_saved(sku):
-            """Start the slider at what this part actually uses, not 6.0."""
-            try:
-                return SKUConfig.load(sku).threshold if sku else gr.update()
-            except FileNotFoundError:
+            """Start the slider at what this part actually uses, not 6.0.
+
+            A part with nothing saved yet starts at the default. Keeping the
+            previous part's number is how 898213-8740's 215.9 was saved onto
+            898213-8750, where it passed every bad part.
+            """
+            if not sku:
                 return gr.update()
+            try:
+                return SKUConfig.load(sku).threshold
+            except FileNotFoundError:
+                return SKUConfig(sku=sku).threshold
 
         # Save the two measured values, then pull every display back in step
         # so the table, the panel and the sliders cannot disagree.
@@ -3055,7 +3547,11 @@ def build_ui():
         sku_refresh_btn.click(sku_summary, sku_pick, sku_info
         ).then(_thr_note, [state, sku_pick], thr_note
         ).then(_thr_saved, sku_pick, threshold
-        ).then(_size_saved, sku_pick, input_size)
+        ).then(_size_saved, sku_pick, input_size
+        ).then(do_roi_load, [sku_pick, state],
+               [state, roi_preview, roi_table, roi_status])
+        roi_reload_btn.click(do_roi_load, [sku_pick, state],
+                             [state, roi_preview, roi_table, roi_status])
 
         app.load(_thr_saved, sku_pick, threshold)
         sku_pick.change(_thr_saved, sku_pick, threshold)

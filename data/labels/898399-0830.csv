@@ -1,0 +1,14 @@
+# Ground truth for the test set of SKU 898399-0830, supplied by the user on
+# 2026-10-01.
+#
+#   label      1 = NG, fails a check on the inspection sheet.
+#   condition  ok / ng / retake
+#
+# Checks on the inspection sheet: 4 round holes and 1 oval hole, all punched.
+#
+# IMG3-N  NG -- a round hole where the oval hole should be.
+# IMG4-N  NG -- round hole 1 (leftmost in the photos) missing.
+#
+image,label,condition
+IMG3-N.jpg,1,ng
+IMG4-N.jpg,1,ng

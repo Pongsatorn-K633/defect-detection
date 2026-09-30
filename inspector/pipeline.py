@@ -182,12 +182,15 @@ def preprocess(
         res.info["aligned"] = False
         return res
 
+    seed_angle = None
     if ref_stats is None:
         ref_stats = align_mod.reference_stats(part, cfg.align)
         res.info["defined_reference"] = True
+        seed_angle = ref_stats["angle"]
     canvas = ref_stats["canvas_size"]
 
-    M, sim_info = align_mod.similarity_to_canonical(part, ref_stats, ref_mask)
+    M, sim_info = align_mod.similarity_to_canonical(part, ref_stats, ref_mask,
+                                                    angle=seed_angle)
     res.info.update(sim_info)
     lap("rotation search")
 

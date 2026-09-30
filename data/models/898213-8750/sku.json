@@ -1,0 +1,39 @@
+{
+  "sku": "898213-8750",
+  "canvas_size": [
+    1056,
+    1250
+  ],
+  "ref_area_px": 960281.0,
+  "threshold": 15.3,
+  "rois": [
+    {
+      "id": "check_1",
+      "type": "appearance",
+      "box": [
+        219,
+        503,
+        215,
+        189
+      ],
+      "threshold": 15.32
+    },
+    {
+      "id": "check_1_present_geom",
+      "type": "geometry",
+      "box": [
+        492,
+        456,
+        53,
+        315
+      ],
+      "tolerance": {
+        "min_area_frac": 0.28
+      },
+      "note": "geometry (must be metal): added by Find best box for check_1"
+    }
+  ],
+  "input_size": 1120,
+  "threshold_worst_ok": 6.515875339508057,
+  "threshold_best_ng": 36.037654876708984
+}
